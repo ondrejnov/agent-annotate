@@ -1,5 +1,5 @@
 /**
- * Pi Annotate - Background Service Worker
+ * Agent Annotation - Background Service Worker
  *
  * Injects the annotation UI, captures screenshots, and submits annotation
  * payloads to a configured HTTP endpoint.
@@ -60,7 +60,7 @@ async function postAnnotations(msg) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      source: "pi-annotate",
+      source: "agent-annotation",
       type: "annotations",
       timestamp: new Date().toISOString(),
       requestId: getRequestId(msg),
@@ -87,7 +87,7 @@ async function sendToContentScript(tabId, msg) {
   try {
     await chrome.tabs.sendMessage(tabId, msg);
   } catch (err) {
-    console.log("[pi-annotate] Content script not found, injecting...");
+    console.log("[agent-annotation] Content script not found, injecting...");
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -96,7 +96,7 @@ async function sendToContentScript(tabId, msg) {
       await new Promise(r => setTimeout(r, 100));
       await chrome.tabs.sendMessage(tabId, msg);
     } catch (injectErr) {
-      console.error("[pi-annotate] Failed to inject:", injectErr.message);
+      console.error("[agent-annotation] Failed to inject:", injectErr.message);
       const requestId = getRequestId(msg);
       if (requestId) requestTabs.delete(requestId);
     }
@@ -120,7 +120,7 @@ function injectAfterLoad(tabId, msg, requestId) {
 
   timeoutId = setTimeout(() => {
     chrome.tabs.onUpdated.removeListener(listener);
-    console.log("[pi-annotate] Navigation timeout - listener removed");
+    console.log("[agent-annotation] Navigation timeout - listener removed");
     if (requestId) requestTabs.delete(requestId);
   }, 30000);
 }
@@ -130,7 +130,7 @@ async function startAnnotation(msg) {
   const requestId = getRequestId(msg);
 
   if (!tab?.id) {
-    console.log("[pi-annotate] No active tab found");
+    console.log("[agent-annotation] No active tab found");
     return;
   }
 
@@ -140,19 +140,19 @@ async function startAnnotation(msg) {
 
   if (msg.url && (restricted || currentUrl !== msg.url)) {
     if (restricted) {
-      console.log("[pi-annotate] Opening new tab:", msg.url);
+      console.log("[agent-annotation] Opening new tab:", msg.url);
       chrome.tabs.create({ url: msg.url }, (createdTab) => {
         if (chrome.runtime.lastError) {
-          console.error("[pi-annotate] Failed to create tab:", chrome.runtime.lastError.message);
+          console.error("[agent-annotation] Failed to create tab:", chrome.runtime.lastError.message);
           return;
         }
         injectAfterLoad(createdTab.id, msg, requestId);
       });
     } else {
-      console.log("[pi-annotate] Navigating to:", msg.url);
+      console.log("[agent-annotation] Navigating to:", msg.url);
       chrome.tabs.update(tabId, { url: msg.url }, (updatedTab) => {
         if (chrome.runtime.lastError) {
-          console.error("[pi-annotate] Failed to navigate:", chrome.runtime.lastError.message);
+          console.error("[agent-annotation] Failed to navigate:", chrome.runtime.lastError.message);
           return;
         }
         injectAfterLoad(updatedTab.id, msg, requestId);
@@ -162,11 +162,11 @@ async function startAnnotation(msg) {
   }
 
   if (restricted) {
-    console.log("[pi-annotate] Cannot annotate restricted tab:", currentUrl);
+    console.log("[agent-annotation] Cannot annotate restricted tab:", currentUrl);
     return;
   }
 
-  console.log("[pi-annotate] Activating on current tab:", currentUrl);
+  console.log("[agent-annotation] Activating on current tab:", currentUrl);
   if (requestId) requestTabs.set(requestId, tabId);
   await sendToContentScript(tabId, msg);
 }
@@ -176,18 +176,18 @@ async function togglePicker() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id || isRestrictedUrl(tab.url)) {
-      console.log("[pi-annotate] Cannot toggle picker: no valid tab");
+      console.log("[agent-annotation] Cannot toggle picker: no valid tab");
       return;
     }
     await sendToContentScript(tab.id, { type: "TOGGLE_PICKER" });
   } catch (err) {
-    console.error("[pi-annotate] Toggle picker failed:", err);
+    console.error("[agent-annotation] Toggle picker failed:", err);
   }
 }
 
 // Handle messages from content script and popup.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  console.log("[pi-annotate] Message:", msg.type);
+  console.log("[agent-annotation] Message:", msg.type);
 
   if (msg.type === "CHECK_CONNECTION") {
     getEndpointStatus().then(sendResponse);
@@ -208,16 +208,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "CAPTURE_SCREENSHOT") {
     if (!sender.tab?.windowId) {
-      console.log("[pi-annotate] Screenshot failed: No window ID");
+      console.log("[agent-annotation] Screenshot failed: No window ID");
       sendResponse({ error: "No window ID" });
       return true;
     }
     chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: "png" }, (dataUrl) => {
       if (chrome.runtime.lastError) {
-        console.log("[pi-annotate] Screenshot error:", chrome.runtime.lastError.message);
+        console.log("[agent-annotation] Screenshot error:", chrome.runtime.lastError.message);
         sendResponse({ error: chrome.runtime.lastError.message });
       } else {
-        console.log("[pi-annotate] Screenshot captured, size:", dataUrl?.length || 0);
+        console.log("[agent-annotation] Screenshot captured, size:", dataUrl?.length || 0);
         sendResponse({ dataUrl });
       }
     });
@@ -226,11 +226,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "ANNOTATIONS_COMPLETE") {
     if (requestId) requestTabs.delete(requestId);
-    console.log("[pi-annotate] Posting annotations to HTTP endpoint");
+    console.log("[agent-annotation] Posting annotations to HTTP endpoint");
     postAnnotations(msg)
       .then(sendResponse)
       .catch((err) => {
-        console.error("[pi-annotate] Failed to post annotations:", err);
+        console.error("[agent-annotation] Failed to post annotations:", err);
         sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
       });
     return true;
@@ -254,4 +254,4 @@ chrome.action.onClicked.addListener(() => {
   startAnnotation({ type: "START_ANNOTATION" });
 });
 
-console.log("[pi-annotate] Background script loaded");
+console.log("[agent-annotation] Background script loaded");

@@ -1,4 +1,4 @@
-// Pi Annotate - Popup Script
+// Agent Annotation - Popup Script
 
 const DEFAULT_ENDPOINT = "http://localhost:3000/annotations";
 

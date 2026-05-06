@@ -1,5 +1,5 @@
 /**
- * Pi Annotate - Content Script (v0.4.0)
+ * Agent Annotation - Content Script (v0.4.0)
  * 
  * DevTools-like element picker with inline note cards:
  * - Hover to highlight elements
@@ -11,7 +11,7 @@
 
 (() => {
   // Prevent double-injection (use Symbol for unique key to avoid conflicts)
-  const LOADED_KEY = "__piAnnotate_" + chrome.runtime.id;
+  const LOADED_KEY = "__agentAnnotation_" + chrome.runtime.id;
   if (window[LOADED_KEY]) return;
   window[LOADED_KEY] = true;
   
@@ -40,15 +40,15 @@
       .replace(/'/g, "&#039;");
   }
   
-  // Check if element is part of pi-annotate UI (by id or class)
-  function isPiElement(el) {
+  // Check if element is part of agent-annotation UI (by id or class)
+  function isAgentElement(el) {
     if (!el) return false;
-    if (el.id?.startsWith("pi-")) return true;
+    if (el.id?.startsWith("agent-")) return true;
     const cls = el.className;
     if (!cls) return false;
     // Handle both string className and SVGAnimatedString
     const clsStr = typeof cls === "string" ? cls : cls.baseVal || "";
-    return clsStr.split(/\s+/).some(c => c.startsWith("pi-"));
+    return clsStr.split(/\s+/).some(c => c.startsWith("agent-"));
   }
   
   // Update note card's displayed selector label
@@ -58,7 +58,7 @@
     const card = notesContainer?.querySelector(`[data-index="${index}"]`);
     if (!card) return;
     const label = sel.id ? `#${sel.id}` : `${sel.tag}${sel.classes[0] ? "." + sel.classes[0] : ""}`;
-    const selectorEl = card.querySelector(".pi-note-selector");
+    const selectorEl = card.querySelector(".agent-note-selector");
     if (selectorEl) {
       selectorEl.textContent = label;
       selectorEl.title = sel.selector;
@@ -117,58 +117,58 @@
   
   const STYLES = `
     /* ═══════════════════════════════════════════════════════════════════
-       CSS Custom Properties (aligned with pi interview theme)
+       CSS Custom Properties (aligned with agent annotation theme)
        ═══════════════════════════════════════════════════════════════════ */
     :root {
-      --pi-bg-body: #18181e;
-      --pi-bg-card: #1e1e24;
-      --pi-bg-elevated: #252530;
-      --pi-bg-selected: #3a3a4a;
-      --pi-bg-hover: #2b2b37;
-      --pi-fg: #e0e0e0;
-      --pi-fg-muted: #808080;
-      --pi-fg-dim: #666666;
-      --pi-accent: #8abeb7;
-      --pi-accent-hover: #9dcec7;
-      --pi-accent-muted: rgba(138, 190, 183, 0.15);
-      --pi-border: #5f87ff;
-      --pi-border-muted: #505050;
-      --pi-border-focus: #7a7a8a;
-      --pi-success: #b5bd68;
-      --pi-warning: #f0c674;
-      --pi-error: #cc6666;
-      --pi-focus-ring: rgba(95, 135, 255, 0.2);
-      --pi-shadow: rgba(0, 0, 0, 0.5);
-      --pi-font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
-      --pi-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      --pi-radius: 4px;
+      --agent-bg-body: #18181e;
+      --agent-bg-card: #1e1e24;
+      --agent-bg-elevated: #252530;
+      --agent-bg-selected: #3a3a4a;
+      --agent-bg-hover: #2b2b37;
+      --agent-fg: #e0e0e0;
+      --agent-fg-muted: #808080;
+      --agent-fg-dim: #666666;
+      --agent-accent: #8abeb7;
+      --agent-accent-hover: #9dcec7;
+      --agent-accent-muted: rgba(138, 190, 183, 0.15);
+      --agent-border: #5f87ff;
+      --agent-border-muted: #505050;
+      --agent-border-focus: #7a7a8a;
+      --agent-success: #b5bd68;
+      --agent-warning: #f0c674;
+      --agent-error: #cc6666;
+      --agent-focus-ring: rgba(95, 135, 255, 0.2);
+      --agent-shadow: rgba(0, 0, 0, 0.5);
+      --agent-font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+      --agent-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --agent-radius: 4px;
     }
     
     /* Light theme */
     @media (prefers-color-scheme: light) {
       :root {
-        --pi-bg-body: #f8f8f8;
-        --pi-bg-card: #ffffff;
-        --pi-bg-elevated: #f0f0f0;
-        --pi-bg-selected: #d0d0e0;
-        --pi-bg-hover: #e8e8e8;
-        --pi-fg: #1a1a1a;
-        --pi-fg-muted: #6c6c6c;
-        --pi-fg-dim: #8a8a8a;
-        --pi-accent: #5f8787;
-        --pi-accent-hover: #4a7272;
-        --pi-accent-muted: rgba(95, 135, 135, 0.15);
-        --pi-border: #5f87af;
-        --pi-border-muted: #b0b0b0;
-        --pi-border-focus: #8a8a9a;
-        --pi-success: #87af87;
-        --pi-warning: #d7af5f;
-        --pi-error: #af5f5f;
-        --pi-focus-ring: rgba(95, 135, 175, 0.2);
-        --pi-shadow: rgba(0, 0, 0, 0.15);
+        --agent-bg-body: #f8f8f8;
+        --agent-bg-card: #ffffff;
+        --agent-bg-elevated: #f0f0f0;
+        --agent-bg-selected: #d0d0e0;
+        --agent-bg-hover: #e8e8e8;
+        --agent-fg: #1a1a1a;
+        --agent-fg-muted: #6c6c6c;
+        --agent-fg-dim: #8a8a8a;
+        --agent-accent: #5f8787;
+        --agent-accent-hover: #4a7272;
+        --agent-accent-muted: rgba(95, 135, 135, 0.15);
+        --agent-border: #5f87af;
+        --agent-border-muted: #b0b0b0;
+        --agent-border-focus: #8a8a9a;
+        --agent-success: #87af87;
+        --agent-warning: #d7af5f;
+        --agent-error: #af5f5f;
+        --agent-focus-ring: rgba(95, 135, 175, 0.2);
+        --agent-shadow: rgba(0, 0, 0, 0.15);
       }
 
-      .pi-etch-toggle.recording {
+      .agent-etch-toggle.recording {
         background: rgba(175, 95, 95, 0.1);
         box-shadow: 0 0 8px rgba(175, 95, 95, 0.2), inset 0 0 6px rgba(175, 95, 95, 0.04);
         color: #8b4444;
@@ -178,40 +178,40 @@
     /* ═══════════════════════════════════════════════════════════════════
        Highlight & Tooltip
        ═══════════════════════════════════════════════════════════════════ */
-    #pi-highlight {
+    #agent-highlight {
       position: fixed;
       pointer-events: none;
       z-index: ${Z_INDEX_HIGHLIGHT};
-      background: var(--pi-accent-muted);
-      border: 2px solid var(--pi-accent);
-      border-radius: var(--pi-radius);
+      background: var(--agent-accent-muted);
+      border: 2px solid var(--agent-accent);
+      border-radius: var(--agent-radius);
       transition: all 0.05s ease-out;
     }
     
-    #pi-tooltip {
+    #agent-tooltip {
       position: fixed;
       pointer-events: none;
       z-index: ${Z_INDEX_TOOLTIP};
-      background: var(--pi-bg-card);
-      color: var(--pi-fg);
+      background: var(--agent-bg-card);
+      color: var(--agent-fg);
       padding: 6px 10px;
-      border-radius: var(--pi-radius);
-      border: 1px solid var(--pi-border-muted);
-      font: 12px/1.4 var(--pi-font-mono);
-      box-shadow: 0 2px 8px var(--pi-shadow);
+      border-radius: var(--agent-radius);
+      border: 1px solid var(--agent-border-muted);
+      font: 12px/1.4 var(--agent-font-mono);
+      box-shadow: 0 2px 8px var(--agent-shadow);
       max-width: 400px;
     }
     
-    #pi-tooltip .tag { color: var(--pi-error); }
-    #pi-tooltip .id { color: var(--pi-warning); }
-    #pi-tooltip .class { color: var(--pi-border); }
-    #pi-tooltip .size { color: var(--pi-fg-dim); margin-left: 8px; }
-    #pi-tooltip .hint { color: var(--pi-accent); font-size: 11px; margin-top: 4px; display: block; }
+    #agent-tooltip .tag { color: var(--agent-error); }
+    #agent-tooltip .id { color: var(--agent-warning); }
+    #agent-tooltip .class { color: var(--agent-border); }
+    #agent-tooltip .size { color: var(--agent-fg-dim); margin-left: 8px; }
+    #agent-tooltip .hint { color: var(--agent-accent); font-size: 11px; margin-top: 4px; display: block; }
     
     /* ═══════════════════════════════════════════════════════════════════
        Markers & Selection
        ═══════════════════════════════════════════════════════════════════ */
-    #pi-markers {
+    #agent-markers {
       position: fixed;
       top: 0; left: 0;
       width: 100%; height: 100%;
@@ -219,44 +219,44 @@
       z-index: ${Z_INDEX_MARKERS};
     }
     
-    .pi-marker-outline {
+    .agent-marker-outline {
       position: fixed;
       pointer-events: none;
-      border: 2px solid var(--pi-accent);
-      border-radius: var(--pi-radius);
-      background: var(--pi-accent-muted);
+      border: 2px solid var(--agent-accent);
+      border-radius: var(--agent-radius);
+      background: var(--agent-accent-muted);
     }
     
-    .pi-marker-badge {
+    .agent-marker-badge {
       position: fixed;
       pointer-events: auto;
-      background: var(--pi-accent);
-      color: var(--pi-bg-body);
+      background: var(--agent-accent);
+      color: var(--agent-bg-body);
       width: 28px;
       height: 28px;
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      font: bold 13px var(--pi-font-ui);
+      font: bold 13px var(--agent-font-ui);
       cursor: pointer;
-      box-shadow: 0 2px 8px var(--pi-shadow);
+      box-shadow: 0 2px 8px var(--agent-shadow);
       transition: transform 0.15s, box-shadow 0.15s;
     }
     
-    .pi-marker-badge:hover {
+    .agent-marker-badge:hover {
       transform: scale(1.1);
-      background: var(--pi-accent-hover);
+      background: var(--agent-accent-hover);
     }
     
-    .pi-marker-badge.open {
-      background: var(--pi-success);
+    .agent-marker-badge.open {
+      background: var(--agent-success);
     }
     
     /* ═══════════════════════════════════════════════════════════════════
        Connectors
        ═══════════════════════════════════════════════════════════════════ */
-    .pi-connectors {
+    .agent-connectors {
       position: fixed;
       top: 0; left: 0;
       width: 100%; height: 100%;
@@ -264,22 +264,22 @@
       z-index: ${Z_INDEX_CONNECTORS};
     }
     
-    .pi-connector {
+    .agent-connector {
       fill: none;
-      stroke: var(--pi-accent);
+      stroke: var(--agent-accent);
       stroke-opacity: 0.5;
       stroke-width: 2;
       stroke-dasharray: 6 4;
     }
     
-    .pi-connector-dot {
-      fill: var(--pi-accent);
+    .agent-connector-dot {
+      fill: var(--agent-accent);
     }
     
     /* ═══════════════════════════════════════════════════════════════════
        Note Cards
        ═══════════════════════════════════════════════════════════════════ */
-    .pi-notes-container {
+    .agent-notes-container {
       position: fixed;
       top: 0; left: 0;
       width: 100%; height: 100%;
@@ -287,101 +287,101 @@
       z-index: ${Z_INDEX_MARKERS};
     }
     
-    .pi-note-card {
+    .agent-note-card {
       position: fixed;
       width: 280px;
-      background: var(--pi-bg-card);
-      border: 1px solid var(--pi-border-muted);
+      background: var(--agent-bg-card);
+      border: 1px solid var(--agent-border-muted);
       border-radius: 8px;
-      box-shadow: 0 4px 24px var(--pi-shadow);
+      box-shadow: 0 4px 24px var(--agent-shadow);
       pointer-events: auto;
-      font-family: var(--pi-font-ui);
+      font-family: var(--agent-font-ui);
       overflow: hidden;
     }
     
-    .pi-note-card * { box-sizing: border-box; }
+    .agent-note-card * { box-sizing: border-box; }
     
-    .pi-note-card:hover {
-      border-color: var(--pi-border-focus);
+    .agent-note-card:hover {
+      border-color: var(--agent-border-focus);
     }
     
-    .pi-note-card.dragging {
+    .agent-note-card.dragging {
       opacity: 0.9;
       cursor: grabbing;
     }
     
-    .pi-note-header {
+    .agent-note-header {
       display: flex;
       align-items: center;
       gap: 8px;
       padding: 8px 10px;
-      background: var(--pi-bg-elevated);
-      border-bottom: 1px solid var(--pi-border-muted);
+      background: var(--agent-bg-elevated);
+      border-bottom: 1px solid var(--agent-border-muted);
       cursor: grab;
     }
     
-    .pi-note-badge {
-      background: var(--pi-accent);
-      color: var(--pi-bg-body);
+    .agent-note-badge {
+      background: var(--agent-accent);
+      color: var(--agent-bg-body);
       width: 22px;
       height: 22px;
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      font: bold 11px var(--pi-font-ui);
+      font: bold 11px var(--agent-font-ui);
       flex-shrink: 0;
     }
     
-    .pi-note-selector {
+    .agent-note-selector {
       flex: 1;
-      font: 12px var(--pi-font-mono);
-      color: var(--pi-fg-muted);
+      font: 12px var(--agent-font-mono);
+      color: var(--agent-fg-muted);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       cursor: pointer;
     }
     
-    .pi-note-selector:hover {
-      color: var(--pi-accent);
+    .agent-note-selector:hover {
+      color: var(--agent-accent);
       text-decoration: underline;
     }
     
-    .pi-note-screenshot,
-    .pi-note-close,
-    .pi-note-expand,
-    .pi-note-contract {
+    .agent-note-screenshot,
+    .agent-note-close,
+    .agent-note-expand,
+    .agent-note-contract {
       background: none;
       border: none;
-      color: var(--pi-fg-dim);
+      color: var(--agent-fg-dim);
       font-size: 14px;
       cursor: pointer;
       padding: 2px 4px;
-      border-radius: var(--pi-radius);
+      border-radius: var(--agent-radius);
       transition: all 0.15s;
     }
     
-    .pi-note-expand,
-    .pi-note-contract { font-size: 11px; }
-    .pi-note-expand:hover,
-    .pi-note-contract:hover { background: var(--pi-bg-elevated); color: var(--pi-fg-muted); }
-    .pi-note-screenshot { opacity: 0.4; }
-    .pi-note-screenshot:hover { background: var(--pi-bg-elevated); opacity: 0.7; }
-    .pi-note-screenshot.active { opacity: 1; background: var(--pi-accent-muted); }
-    .pi-note-close:hover { background: var(--pi-bg-elevated); color: var(--pi-error); }
+    .agent-note-expand,
+    .agent-note-contract { font-size: 11px; }
+    .agent-note-expand:hover,
+    .agent-note-contract:hover { background: var(--agent-bg-elevated); color: var(--agent-fg-muted); }
+    .agent-note-screenshot { opacity: 0.4; }
+    .agent-note-screenshot:hover { background: var(--agent-bg-elevated); opacity: 0.7; }
+    .agent-note-screenshot.active { opacity: 1; background: var(--agent-accent-muted); }
+    .agent-note-close:hover { background: var(--agent-bg-elevated); color: var(--agent-error); }
     
-    .pi-note-body {
+    .agent-note-body {
       padding: 10px;
     }
     
-    .pi-note-textarea {
+    .agent-note-textarea {
       width: 100%;
-      background: var(--pi-bg-body);
-      border: 1px solid var(--pi-border-muted);
+      background: var(--agent-bg-body);
+      border: 1px solid var(--agent-border-muted);
       border-radius: 6px;
-      color: var(--pi-fg);
-      font: 13px/1.5 var(--pi-font-ui);
+      color: var(--agent-fg);
+      font: 13px/1.5 var(--agent-font-ui);
       padding: 10px 12px;
       resize: none;
       min-height: 72px;
@@ -389,199 +389,199 @@
       transition: border-color 0.15s, box-shadow 0.15s;
     }
     
-    .pi-note-textarea:focus {
+    .agent-note-textarea:focus {
       outline: none;
-      border-color: var(--pi-accent);
-      box-shadow: 0 0 0 3px var(--pi-focus-ring);
+      border-color: var(--agent-accent);
+      box-shadow: 0 0 0 3px var(--agent-focus-ring);
     }
     
-    .pi-note-textarea::placeholder {
-      color: var(--pi-fg-dim);
+    .agent-note-textarea::placeholder {
+      color: var(--agent-fg-dim);
     }
     
     /* ═══════════════════════════════════════════════════════════════════
        Bottom Panel
        ═══════════════════════════════════════════════════════════════════ */
-    #pi-panel {
+    #agent-panel {
       position: fixed;
       bottom: 0; left: 0; right: 0;
-      background: var(--pi-bg-card);
-      color: var(--pi-fg);
-      font-family: var(--pi-font-ui);
+      background: var(--agent-bg-card);
+      color: var(--agent-fg);
+      font-family: var(--agent-font-ui);
       padding: 10px 16px;
       z-index: ${Z_INDEX_PANEL};
-      box-shadow: 0 -4px 24px var(--pi-shadow);
-      border-top: 1px solid var(--pi-border-muted);
+      box-shadow: 0 -4px 24px var(--agent-shadow);
+      border-top: 1px solid var(--agent-border-muted);
     }
     
-    #pi-panel * { box-sizing: border-box; }
+    #agent-panel * { box-sizing: border-box; }
     
-    .pi-header {
+    .agent-header {
       display: flex;
       align-items: center;
       gap: 10px;
       margin-bottom: 8px;
       padding-bottom: 8px;
-      border-bottom: 1px solid var(--pi-bg-elevated);
+      border-bottom: 1px solid var(--agent-bg-elevated);
     }
     
-    .pi-logo { 
+    .agent-logo { 
       font-size: 15px; 
       font-weight: 700; 
-      color: var(--pi-accent);
+      color: var(--agent-accent);
     }
-    .pi-hint { color: var(--pi-fg-dim); font-size: 11px; margin-left: auto; }
+    .agent-hint { color: var(--agent-fg-dim); font-size: 11px; margin-left: auto; }
     
-    .pi-close {
+    .agent-close {
       background: none;
       border: none;
-      color: var(--pi-fg-dim);
+      color: var(--agent-fg-dim);
       font-size: 18px;
       cursor: pointer;
       padding: 0 4px;
       line-height: 1;
     }
-    .pi-close:hover { color: var(--pi-error); }
+    .agent-close:hover { color: var(--agent-error); }
     
-    .pi-toolbar {
+    .agent-toolbar {
       display: flex;
       align-items: center;
       gap: 12px;
       margin-bottom: 8px;
     }
     
-    .pi-mode-toggle {
+    .agent-mode-toggle {
       display: flex;
       gap: 4px;
     }
     
-    .pi-mode-btn {
-      background: var(--pi-bg-elevated);
-      border: 1px solid var(--pi-border-muted);
-      border-radius: var(--pi-radius);
+    .agent-mode-btn {
+      background: var(--agent-bg-elevated);
+      border: 1px solid var(--agent-border-muted);
+      border-radius: var(--agent-radius);
       padding: 5px 10px;
       font-size: 11px;
-      color: var(--pi-fg-muted);
+      color: var(--agent-fg-muted);
       cursor: pointer;
       transition: all 0.15s;
     }
     
-    .pi-mode-btn:hover { background: var(--pi-bg-hover); }
+    .agent-mode-btn:hover { background: var(--agent-bg-hover); }
     
-    .pi-mode-btn.active {
-      background: var(--pi-accent);
-      border-color: var(--pi-accent);
-      color: var(--pi-bg-body);
+    .agent-mode-btn.active {
+      background: var(--agent-accent);
+      border-color: var(--agent-accent);
+      color: var(--agent-bg-body);
     }
     
-    .pi-screenshot-toggle {
+    .agent-screenshot-toggle {
       display: flex;
       align-items: center;
       gap: 6px;
-      background: var(--pi-bg-body);
+      background: var(--agent-bg-body);
       padding: 2px 2px 2px 8px;
-      border-radius: var(--pi-radius);
+      border-radius: var(--agent-radius);
     }
     
-    .pi-toggle-label {
+    .agent-toggle-label {
       font-size: 11px;
-      color: var(--pi-fg-dim);
+      color: var(--agent-fg-dim);
     }
     
-    .pi-ss-btn {
+    .agent-ss-btn {
       background: transparent;
       border: none;
       border-radius: 3px;
       padding: 5px 10px;
       font-size: 11px;
-      color: var(--pi-fg-dim);
+      color: var(--agent-fg-dim);
       cursor: pointer;
       transition: all 0.15s;
     }
     
-    .pi-ss-btn:hover { color: var(--pi-fg-muted); }
+    .agent-ss-btn:hover { color: var(--agent-fg-muted); }
     
-    .pi-ss-btn.active {
-      background: var(--pi-accent);
-      color: var(--pi-bg-body);
+    .agent-ss-btn.active {
+      background: var(--agent-accent);
+      color: var(--agent-bg-body);
     }
     
-    .pi-spacer { flex: 1; }
+    .agent-spacer { flex: 1; }
     
-    .pi-count {
+    .agent-count {
       font-size: 12px;
-      color: var(--pi-fg-dim);
+      color: var(--agent-fg-dim);
     }
     
-    .pi-notes-toggle {
+    .agent-notes-toggle {
       display: flex;
       align-items: center;
       gap: 6px;
       font-size: 12px;
-      color: var(--pi-fg-muted);
+      color: var(--agent-fg-muted);
       cursor: pointer;
       user-select: none;
     }
     
-    .pi-notes-toggle input {
+    .agent-notes-toggle input {
       width: 14px;
       height: 14px;
-      accent-color: var(--pi-accent);
+      accent-color: var(--agent-accent);
       cursor: pointer;
     }
     
-    .pi-notes-toggle:hover { color: var(--pi-fg); }
+    .agent-notes-toggle:hover { color: var(--agent-fg); }
 
     /* ── Etch toggle: recording mode pill ── */
-    .pi-etch-toggle {
-      background: var(--pi-bg-elevated);
-      border: 1px solid var(--pi-border-muted);
+    .agent-etch-toggle {
+      background: var(--agent-bg-elevated);
+      border: 1px solid var(--agent-border-muted);
       border-radius: 16px;
       padding: 3px 10px 3px 8px;
       transition: background 0.3s, border-color 0.3s, box-shadow 0.3s, color 0.3s;
     }
 
-    .pi-etch-toggle input { display: none; }
+    .agent-etch-toggle input { display: none; }
 
-    .pi-etch-toggle span:first-of-type::before {
+    .agent-etch-toggle span:first-of-type::before {
       content: "●";
       font-size: 9px;
       margin-right: 4px;
       vertical-align: 1px;
-      color: var(--pi-fg-dim);
+      color: var(--agent-fg-dim);
       transition: color 0.3s;
     }
 
-    .pi-etch-toggle:hover {
-      border-color: var(--pi-fg-dim);
-      color: var(--pi-fg);
+    .agent-etch-toggle:hover {
+      border-color: var(--agent-fg-dim);
+      color: var(--agent-fg);
     }
 
-    .pi-etch-toggle.recording {
+    .agent-etch-toggle.recording {
       background: rgba(204, 102, 102, 0.15);
-      border-color: var(--pi-error);
+      border-color: var(--agent-error);
       box-shadow: 0 0 8px rgba(204, 102, 102, 0.3), inset 0 0 6px rgba(204, 102, 102, 0.06);
       color: #e0a0a0;
     }
 
-    .pi-etch-toggle.recording:hover {
+    .agent-etch-toggle.recording:hover {
       box-shadow: 0 0 12px rgba(204, 102, 102, 0.4), inset 0 0 6px rgba(204, 102, 102, 0.08);
     }
 
-    .pi-etch-toggle.recording span:first-of-type::before {
-      color: var(--pi-error);
-      animation: pi-etch-pulse 1.5s ease-in-out infinite;
+    .agent-etch-toggle.recording span:first-of-type::before {
+      color: var(--agent-error);
+      animation: agent-etch-pulse 1.5s ease-in-out infinite;
     }
 
-    @keyframes pi-etch-pulse {
+    @keyframes agent-etch-pulse {
       0%, 100% { opacity: 0.4; }
       50% { opacity: 1; }
     }
 
-    .pi-etch-badge {
-      background: var(--pi-accent);
-      color: var(--pi-bg-body);
-      font: bold 10px var(--pi-font-ui);
+    .agent-etch-badge {
+      background: var(--agent-accent);
+      color: var(--agent-bg-body);
+      font: bold 10px var(--agent-font-ui);
       min-width: 18px;
       height: 18px;
       border-radius: 9px;
@@ -592,49 +592,49 @@
       transition: background 0.3s;
     }
 
-    .pi-etch-toggle.recording .pi-etch-badge { background: var(--pi-error); }
+    .agent-etch-toggle.recording .agent-etch-badge { background: var(--agent-error); }
 
     /* Changed element indicators */
-    [data-pi-changed] {
-      outline: 2px dashed var(--pi-warning) !important;
+    [data-agent-changed] {
+      outline: 2px dashed var(--agent-warning) !important;
       outline-offset: 2px !important;
     }
     
-    .pi-context-row {
+    .agent-context-row {
       margin-bottom: 8px;
     }
     
-    .pi-context-row input {
+    .agent-context-row input {
       width: 100%;
-      background: var(--pi-bg-body);
-      border: 1px solid var(--pi-border-muted);
-      border-radius: var(--pi-radius);
-      color: var(--pi-fg);
+      background: var(--agent-bg-body);
+      border: 1px solid var(--agent-border-muted);
+      border-radius: var(--agent-radius);
+      color: var(--agent-fg);
       font-family: inherit;
       font-size: 13px;
       padding: 8px 12px;
     }
     
-    .pi-context-row input:focus {
+    .agent-context-row input:focus {
       outline: none;
-      border-color: var(--pi-accent);
-      box-shadow: 0 0 0 3px var(--pi-focus-ring);
+      border-color: var(--agent-accent);
+      box-shadow: 0 0 0 3px var(--agent-focus-ring);
     }
     
-    .pi-context-row input::placeholder { color: var(--pi-fg-dim); }
+    .agent-context-row input::placeholder { color: var(--agent-fg-dim); }
     
-    .pi-actions {
+    .agent-actions {
       display: flex;
       justify-content: flex-end;
       padding-top: 8px;
-      border-top: 1px solid var(--pi-bg-elevated);
+      border-top: 1px solid var(--agent-bg-elevated);
     }
     
-    .pi-buttons { display: flex; gap: 8px; }
+    .agent-buttons { display: flex; gap: 8px; }
     
-    .pi-btn {
+    .agent-btn {
       padding: 6px 14px;
-      border-radius: var(--pi-radius);
+      border-radius: var(--agent-radius);
       font-size: 12px;
       font-weight: 500;
       cursor: pointer;
@@ -642,21 +642,21 @@
       transition: all 0.15s;
     }
     
-    .pi-btn-cancel {
-      background: var(--pi-bg-elevated);
-      color: var(--pi-fg-muted);
-      border: 1px solid var(--pi-border-muted);
+    .agent-btn-cancel {
+      background: var(--agent-bg-elevated);
+      color: var(--agent-fg-muted);
+      border: 1px solid var(--agent-border-muted);
     }
     
-    .pi-btn-cancel:hover { background: var(--pi-bg-hover); color: var(--pi-fg); }
+    .agent-btn-cancel:hover { background: var(--agent-bg-hover); color: var(--agent-fg); }
     
-    .pi-btn-submit {
-      background: var(--pi-accent);
-      color: var(--pi-bg-body);
+    .agent-btn-submit {
+      background: var(--agent-accent);
+      color: var(--agent-bg-body);
     }
     
-    .pi-btn-submit:hover { 
-      background: var(--pi-accent-hover);
+    .agent-btn-submit:hover { 
+      background: var(--agent-accent-hover);
     }
   `;
   
@@ -665,7 +665,7 @@
   // ─────────────────────────────────────────────────────────────────────
   
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    console.log("[pi-annotate] Received:", msg.type);
+    console.log("[agent-annotation] Received:", msg.type);
     
     if (msg.type === "START_ANNOTATION") {
       requestId = msg.requestId || msg.id || null;
@@ -689,7 +689,7 @@
   
   function activate() {
     if (isActive) {
-      console.log("[pi-annotate] Restarting session (new request)");
+      console.log("[agent-annotation] Restarting session (new request)");
       resetState();
       return;
     }
@@ -697,7 +697,7 @@
     
     // Inject styles
     styleEl = document.createElement("style");
-    styleEl.id = "pi-styles";
+    styleEl.id = "agent-styles";
     styleEl.textContent = STYLES;
     (document.head || document.documentElement).appendChild(styleEl);
     
@@ -718,7 +718,7 @@
     initDragHandlers();
     
     document.body.style.cursor = "crosshair";
-    console.log("[pi-annotate] Activated");
+    console.log("[agent-annotation] Activated");
   }
   
   function resetState() {
@@ -756,17 +756,17 @@
     hideTooltip();
     
     // Reset mode toggle buttons
-    const singleBtn = document.getElementById("pi-mode-single");
-    const multiBtn = document.getElementById("pi-mode-multi");
+    const singleBtn = document.getElementById("agent-mode-single");
+    const multiBtn = document.getElementById("agent-mode-multi");
     if (singleBtn && multiBtn) {
       singleBtn.classList.add("active");
       multiBtn.classList.remove("active");
     }
     
     // Reset screenshot mode buttons
-    const eachBtn = document.getElementById("pi-ss-each");
-    const fullBtn = document.getElementById("pi-ss-full");
-    const noneBtn = document.getElementById("pi-ss-none");
+    const eachBtn = document.getElementById("agent-ss-each");
+    const fullBtn = document.getElementById("agent-ss-full");
+    const noneBtn = document.getElementById("agent-ss-none");
     if (eachBtn && fullBtn && noneBtn) {
       eachBtn.classList.add("active");
       fullBtn.classList.remove("active");
@@ -774,23 +774,23 @@
     }
     
     // Clear context input
-    const contextEl = document.getElementById("pi-context");
+    const contextEl = document.getElementById("agent-context");
     if (contextEl) contextEl.value = "";
     
     // Reset debug mode checkbox
-    const debugCheckbox = document.getElementById("pi-debug-mode");
+    const debugCheckbox = document.getElementById("agent-debug-mode");
     if (debugCheckbox) debugCheckbox.checked = false;
 
-    const etchCheckbox = document.getElementById("pi-etch-mode");
+    const etchCheckbox = document.getElementById("agent-etch-mode");
     if (etchCheckbox) etchCheckbox.checked = false;
-    const etchToggle = etchCheckbox?.closest(".pi-etch-toggle");
+    const etchToggle = etchCheckbox?.closest(".agent-etch-toggle");
     if (etchToggle) etchToggle.classList.remove("recording");
     
     // Update count
-    const countEl = document.getElementById("pi-count");
+    const countEl = document.getElementById("agent-count");
     if (countEl) countEl.textContent = "0 selected";
     
-    console.log("[pi-annotate] State reset for new session");
+    console.log("[agent-annotation] State reset for new session");
   }
   
   function deactivate() {
@@ -843,7 +843,7 @@
     etchChildListMutations = [];
     etchChangeCount = 0;
     
-    console.log("[pi-annotate] Deactivated");
+    console.log("[agent-annotation] Deactivated");
   }
   
   // ─────────────────────────────────────────────────────────────────────
@@ -852,97 +852,97 @@
   
   function createHighlight() {
     highlightEl = document.createElement("div");
-    highlightEl.id = "pi-highlight";
+    highlightEl.id = "agent-highlight";
     highlightEl.style.display = "none";
     document.body.appendChild(highlightEl);
   }
   
   function createTooltip() {
     tooltipEl = document.createElement("div");
-    tooltipEl.id = "pi-tooltip";
+    tooltipEl.id = "agent-tooltip";
     tooltipEl.style.display = "none";
     document.body.appendChild(tooltipEl);
   }
   
   function createMarkers() {
     markersContainer = document.createElement("div");
-    markersContainer.id = "pi-markers";
+    markersContainer.id = "agent-markers";
     document.body.appendChild(markersContainer);
   }
   
   function createNotesContainer() {
     notesContainer = document.createElement("div");
-    notesContainer.className = "pi-notes-container";
+    notesContainer.className = "agent-notes-container";
     document.body.appendChild(notesContainer);
     
     connectorsEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    connectorsEl.setAttribute("class", "pi-connectors");
+    connectorsEl.setAttribute("class", "agent-connectors");
     document.body.appendChild(connectorsEl);
   }
   
   function createPanel() {
     panelEl = document.createElement("div");
-    panelEl.id = "pi-panel";
+    panelEl.id = "agent-panel";
     panelEl.innerHTML = `
-      <div class="pi-header">
-        <span class="pi-logo">π Annotate</span>
-        <span class="pi-hint">Click elements • ${ALT_KEY_LABEL}+scroll cycles parents • ESC to close</span>
-        <button class="pi-close" id="pi-close" title="Close (ESC)">×</button>
+      <div class="agent-header">
+        <span class="agent-logo">Agent Annotation</span>
+        <span class="agent-hint">Click elements • ${ALT_KEY_LABEL}+scroll cycles parents • ESC to close</span>
+        <button class="agent-close" id="agent-close" title="Close (ESC)">×</button>
       </div>
-      <div class="pi-toolbar">
-        <div class="pi-mode-toggle">
-          <button class="pi-mode-btn active" id="pi-mode-single" title="Click replaces selection">Single</button>
-          <button class="pi-mode-btn" id="pi-mode-multi" title="Click adds to selection">Multi</button>
+      <div class="agent-toolbar">
+        <div class="agent-mode-toggle">
+          <button class="agent-mode-btn active" id="agent-mode-single" title="Click replaces selection">Single</button>
+          <button class="agent-mode-btn" id="agent-mode-multi" title="Click adds to selection">Multi</button>
         </div>
-        <div class="pi-screenshot-toggle">
-          <span class="pi-toggle-label">Screenshot</span>
-          <button class="pi-ss-btn active" id="pi-ss-each" title="Crop screenshot to each element">Crop</button>
-          <button class="pi-ss-btn" id="pi-ss-full" title="Capture entire viewport">Full</button>
-          <button class="pi-ss-btn" id="pi-ss-none" title="No screenshots">None</button>
+        <div class="agent-screenshot-toggle">
+          <span class="agent-toggle-label">Screenshot</span>
+          <button class="agent-ss-btn active" id="agent-ss-each" title="Crop screenshot to each element">Crop</button>
+          <button class="agent-ss-btn" id="agent-ss-full" title="Capture entire viewport">Full</button>
+          <button class="agent-ss-btn" id="agent-ss-none" title="No screenshots">None</button>
         </div>
-        <div class="pi-spacer"></div>
-        <span class="pi-count" id="pi-count">0 selected</span>
-        <label class="pi-notes-toggle" title="Show/hide all note cards">
-          <input type="checkbox" id="pi-notes-visible" checked />
+        <div class="agent-spacer"></div>
+        <span class="agent-count" id="agent-count">0 selected</span>
+        <label class="agent-notes-toggle" title="Show/hide all note cards">
+          <input type="checkbox" id="agent-notes-visible" checked />
           <span>Notes</span>
         </label>
-        <label class="pi-notes-toggle" title="Capture computed styles, layout, and CSS variables">
-          <input type="checkbox" id="pi-debug-mode" />
+        <label class="agent-notes-toggle" title="Capture computed styles, layout, and CSS variables">
+          <input type="checkbox" id="agent-debug-mode" />
           <span>Debug</span>
         </label>
-        <label class="pi-notes-toggle pi-etch-toggle" title="Record DevTools edits (style, class, CSS rule changes)">
-          <input type="checkbox" id="pi-etch-mode" />
+        <label class="agent-notes-toggle agent-etch-toggle" title="Record DevTools edits (style, class, CSS rule changes)">
+          <input type="checkbox" id="agent-etch-mode" />
           <span>Etch</span>
-          <span class="pi-etch-badge" id="pi-etch-count" style="display:none"></span>
+          <span class="agent-etch-badge" id="agent-etch-count" style="display:none"></span>
         </label>
       </div>
-      <div class="pi-context-row">
-        <input type="text" id="pi-context" placeholder="General context (optional)..." />
+      <div class="agent-context-row">
+        <input type="text" id="agent-context" placeholder="General context (optional)..." />
       </div>
-      <div class="pi-actions">
-        <div class="pi-buttons">
-          <button class="pi-btn pi-btn-cancel" id="pi-cancel">Cancel</button>
-          <button class="pi-btn pi-btn-submit" id="pi-submit">Submit</button>
+      <div class="agent-actions">
+        <div class="agent-buttons">
+          <button class="agent-btn agent-btn-cancel" id="agent-cancel">Cancel</button>
+          <button class="agent-btn agent-btn-submit" id="agent-submit">Submit</button>
         </div>
       </div>
     `;
     document.body.appendChild(panelEl);
     
-    document.getElementById("pi-close").addEventListener("click", handleCancel);
-    document.getElementById("pi-cancel").addEventListener("click", handleCancel);
-    document.getElementById("pi-submit").addEventListener("click", handleSubmit);
+    document.getElementById("agent-close").addEventListener("click", handleCancel);
+    document.getElementById("agent-cancel").addEventListener("click", handleCancel);
+    document.getElementById("agent-submit").addEventListener("click", handleSubmit);
     
     // Mode toggle
-    document.getElementById("pi-mode-single").addEventListener("click", () => setMultiMode(false));
-    document.getElementById("pi-mode-multi").addEventListener("click", () => setMultiMode(true));
+    document.getElementById("agent-mode-single").addEventListener("click", () => setMultiMode(false));
+    document.getElementById("agent-mode-multi").addEventListener("click", () => setMultiMode(true));
     
     // Screenshot mode toggle
-    document.getElementById("pi-ss-each").addEventListener("click", () => setScreenshotMode("each"));
-    document.getElementById("pi-ss-full").addEventListener("click", () => setScreenshotMode("full"));
-    document.getElementById("pi-ss-none").addEventListener("click", () => setScreenshotMode("none"));
+    document.getElementById("agent-ss-each").addEventListener("click", () => setScreenshotMode("each"));
+    document.getElementById("agent-ss-full").addEventListener("click", () => setScreenshotMode("full"));
+    document.getElementById("agent-ss-none").addEventListener("click", () => setScreenshotMode("none"));
     
     // Notes visibility toggle
-    document.getElementById("pi-notes-visible").addEventListener("change", (e) => {
+    document.getElementById("agent-notes-visible").addEventListener("change", (e) => {
       if (e.target.checked) {
         expandAllNotes();
       } else {
@@ -951,12 +951,12 @@
     });
     
     // Debug mode toggle
-    document.getElementById("pi-debug-mode").addEventListener("change", (e) => {
+    document.getElementById("agent-debug-mode").addEventListener("change", (e) => {
       debugMode = e.target.checked;
     });
 
-    document.getElementById("pi-etch-mode").addEventListener("change", (e) => {
-      const toggle = e.target.closest(".pi-etch-toggle");
+    document.getElementById("agent-etch-mode").addEventListener("change", (e) => {
+      const toggle = e.target.closest(".agent-etch-toggle");
       if (e.target.checked) {
         startEtchCapture();
         if (toggle) toggle.classList.add("recording");
@@ -979,8 +979,8 @@
   
   function setMultiMode(isMulti) {
     multiSelectMode = isMulti;
-    const singleBtn = document.getElementById("pi-mode-single");
-    const multiBtn = document.getElementById("pi-mode-multi");
+    const singleBtn = document.getElementById("agent-mode-single");
+    const multiBtn = document.getElementById("agent-mode-multi");
     if (singleBtn && multiBtn) {
       singleBtn.classList.toggle("active", !isMulti);
       multiBtn.classList.toggle("active", isMulti);
@@ -989,9 +989,9 @@
   
   function setScreenshotMode(mode) {
     screenshotMode = mode;
-    const eachBtn = document.getElementById("pi-ss-each");
-    const fullBtn = document.getElementById("pi-ss-full");
-    const noneBtn = document.getElementById("pi-ss-none");
+    const eachBtn = document.getElementById("agent-ss-each");
+    const fullBtn = document.getElementById("agent-ss-full");
+    const noneBtn = document.getElementById("agent-ss-none");
     if (eachBtn && fullBtn && noneBtn) {
       eachBtn.classList.toggle("active", mode === "each");
       fullBtn.classList.toggle("active", mode === "full");
@@ -1007,7 +1007,7 @@
     const rect = element.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const panelHeight = document.getElementById("pi-panel")?.offsetHeight || 96;
+    const panelHeight = document.getElementById("agent-panel")?.offsetHeight || 96;
     const margin = 16;
     
     // Try right side first
@@ -1071,7 +1071,7 @@
     // Clamp to viewport
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const panelHeight = document.getElementById("pi-panel")?.offsetHeight || 96;
+    const panelHeight = document.getElementById("agent-panel")?.offsetHeight || 96;
     adjusted.x = Math.max(16, Math.min(adjusted.x, vw - cardSize.width - 16));
     adjusted.y = Math.max(16, Math.min(adjusted.y, vh - cardSize.height - panelHeight - 16));
     
@@ -1096,7 +1096,7 @@
       adjustedPos = adjustForCollisions(
         position,
         { width: 280, height: 150 },
-        notesContainer.querySelectorAll(".pi-note-card")
+        notesContainer.querySelectorAll(".agent-note-card")
       );
     }
     
@@ -1105,22 +1105,22 @@
     const comment = elementComments.get(index) || "";
     
     const card = document.createElement("div");
-    card.className = "pi-note-card";
+    card.className = "agent-note-card";
     card.dataset.index = index;
     card.style.left = `${adjustedPos.x}px`;
     card.style.top = `${adjustedPos.y}px`;
     
     card.innerHTML = `
-      <div class="pi-note-header">
-        <span class="pi-note-badge">${index + 1}</span>
-        <span class="pi-note-selector" title="${escapeHtml(sel.selector)}">${escapeHtml(label)}</span>
-        <button class="pi-note-expand" title="Expand to parent">▲</button>
-        <button class="pi-note-contract" title="Contract to child">▼</button>
-        <button class="pi-note-screenshot ${hasScreenshot ? "active" : ""}" title="Toggle screenshot">📷</button>
-        <button class="pi-note-close" title="Remove element">×</button>
+      <div class="agent-note-header">
+        <span class="agent-note-badge">${index + 1}</span>
+        <span class="agent-note-selector" title="${escapeHtml(sel.selector)}">${escapeHtml(label)}</span>
+        <button class="agent-note-expand" title="Expand to parent">▲</button>
+        <button class="agent-note-contract" title="Contract to child">▼</button>
+        <button class="agent-note-screenshot ${hasScreenshot ? "active" : ""}" title="Toggle screenshot">📷</button>
+        <button class="agent-note-close" title="Remove element">×</button>
       </div>
-      <div class="pi-note-body">
-        <textarea class="pi-note-textarea" placeholder="Describe changes for this element...">${escapeHtml(comment)}</textarea>
+      <div class="agent-note-body">
+        <textarea class="agent-note-textarea" placeholder="Describe changes for this element...">${escapeHtml(comment)}</textarea>
       </div>
     `;
     
@@ -1128,13 +1128,13 @@
     const getIndex = () => parseInt(card.dataset.index, 10);
     
     // Event listeners
-    const textarea = card.querySelector(".pi-note-textarea");
+    const textarea = card.querySelector(".agent-note-textarea");
     textarea.addEventListener("input", () => {
       elementComments.set(getIndex(), textarea.value);
       autoResizeTextarea(textarea);
     });
     
-    const screenshotBtn = card.querySelector(".pi-note-screenshot");
+    const screenshotBtn = card.querySelector(".agent-note-screenshot");
     screenshotBtn.addEventListener("click", () => {
       const idx = getIndex();
       const current = elementScreenshots.get(idx) !== false;
@@ -1142,16 +1142,16 @@
       screenshotBtn.classList.toggle("active", !current);
     });
     
-    const closeBtn = card.querySelector(".pi-note-close");
+    const closeBtn = card.querySelector(".agent-note-close");
     closeBtn.addEventListener("click", () => removeElement(getIndex()));
     
-    const expandBtn = card.querySelector(".pi-note-expand");
+    const expandBtn = card.querySelector(".agent-note-expand");
     expandBtn.addEventListener("click", () => expandElement(getIndex()));
     
-    const contractBtn = card.querySelector(".pi-note-contract");
+    const contractBtn = card.querySelector(".agent-note-contract");
     contractBtn.addEventListener("click", () => contractElement(getIndex()));
     
-    const selectorEl = card.querySelector(".pi-note-selector");
+    const selectorEl = card.querySelector(".agent-note-selector");
     selectorEl.addEventListener("click", () => {
       const idx = getIndex();
       const currentSel = selectedElements[idx];
@@ -1225,7 +1225,7 @@
   }
   
   function setupDrag(card) {
-    const header = card.querySelector(".pi-note-header");
+    const header = card.querySelector(".agent-note-header");
     
     header.addEventListener("mousedown", (e) => {
       if (e.target.tagName === "BUTTON" || e.target.tagName === "SPAN") return;
@@ -1280,12 +1280,12 @@
     openNotes = reindexSet(openNotes);
     
     // Update data-index attributes on remaining note cards
-    notesContainer.querySelectorAll(".pi-note-card").forEach(card => {
+    notesContainer.querySelectorAll(".agent-note-card").forEach(card => {
       const cardIndex = parseInt(card.dataset.index, 10);
       if (cardIndex > index) {
         const newIndex = cardIndex - 1;
         card.dataset.index = newIndex;
-        const badge = card.querySelector(".pi-note-badge");
+        const badge = card.querySelector(".agent-note-badge");
         if (badge) badge.textContent = newIndex + 1;
       }
     });
@@ -1300,18 +1300,18 @@
     
     const parent = sel.element.parentElement;
     if (parent && parent !== document.body && parent !== document.documentElement) {
-      if (isPiElement(parent)) {
-        console.log("[pi-annotate] Cannot expand to pi-annotate UI element");
+      if (isAgentElement(parent)) {
+        console.log("[agent-annotation] Cannot expand to agent-annotation UI element");
         return;
       }
       
-      console.log("[pi-annotate] Expanding to parent:", parent.tagName);
+      console.log("[agent-annotation] Expanding to parent:", parent.tagName);
       selectedElements[index] = createSelectionData(parent);
       updateNoteCardLabel(index);
       updateBadges();
       updateConnectors();
     } else {
-      console.log("[pi-annotate] Already at root - no valid parent");
+      console.log("[agent-annotation] Already at root - no valid parent");
     }
   }
   
@@ -1320,17 +1320,17 @@
     if (!sel?.element || !document.contains(sel.element)) return;
     
     const children = Array.from(sel.element.children).filter(c => 
-      c.nodeType === 1 && !isPiElement(c)
+      c.nodeType === 1 && !isAgentElement(c)
     );
     
     if (children.length > 0) {
-      console.log("[pi-annotate] Contracting to child:", children[0].tagName);
+      console.log("[agent-annotation] Contracting to child:", children[0].tagName);
       selectedElements[index] = createSelectionData(children[0]);
       updateNoteCardLabel(index);
       updateBadges();
       updateConnectors();
     } else {
-      console.log("[pi-annotate] No children to contract to");
+      console.log("[agent-annotation] No children to contract to");
     }
   }
   
@@ -1402,7 +1402,7 @@
       
       // Create outline box around selected element
       const outline = document.createElement("div");
-      outline.className = "pi-marker-outline";
+      outline.className = "agent-marker-outline";
       outline.style.left = `${rect.left}px`;
       outline.style.top = `${rect.top}px`;
       outline.style.width = `${rect.width}px`;
@@ -1411,7 +1411,7 @@
       
       // Create numbered badge
       const badge = document.createElement("div");
-      badge.className = `pi-marker-badge ${openNotes.has(i) ? "open" : ""}`;
+      badge.className = `agent-marker-badge ${openNotes.has(i) ? "open" : ""}`;
       badge.dataset.index = i;
       badge.textContent = i + 1;
       badge.style.left = `${rect.right - 14}px`;
@@ -1426,7 +1426,7 @@
     });
     
     // Update count
-    const countEl = document.getElementById("pi-count");
+    const countEl = document.getElementById("agent-count");
     if (countEl) countEl.textContent = `${selectedElements.length} selected`;
   }
   
@@ -1465,12 +1465,12 @@
       const midY = (elemCenter.y + cardAnchor.y) / 2;
       
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("class", "pi-connector");
+      path.setAttribute("class", "agent-connector");
       path.setAttribute("d", `M ${elemCenter.x},${elemCenter.y} Q ${midX},${midY} ${cardAnchor.x},${cardAnchor.y}`);
       connectorsEl.appendChild(path);
       
       const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      dot.setAttribute("class", "pi-connector-dot");
+      dot.setAttribute("class", "agent-connector-dot");
       dot.setAttribute("cx", elemCenter.x);
       dot.setAttribute("cy", elemCenter.y);
       dot.setAttribute("r", 4);
@@ -1534,7 +1534,7 @@
   // ─────────────────────────────────────────────────────────────────────
   
   function onMouseMove(e) {
-    if (!isActive || e.target.closest("#pi-panel") || e.target.closest(".pi-note-card")) {
+    if (!isActive || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) {
       hideHighlight();
       hideTooltip();
       return;
@@ -1545,7 +1545,7 @@
     const el = document.elementFromPoint(e.clientX, e.clientY);
     highlightEl.style.display = "";
     
-    if (!el || el === document.body || el === document.documentElement || isPiElement(el)) {
+    if (!el || el === document.body || el === document.documentElement || isAgentElement(el)) {
       hideHighlight();
       hideTooltip();
       return;
@@ -1555,7 +1555,7 @@
     elementStack = [];
     let current = el;
     while (current && current !== document.body && current !== document.documentElement) {
-      if (!isPiElement(current)) {
+      if (!isAgentElement(current)) {
         elementStack.push(current);
       }
       current = current.parentElement;
@@ -1567,7 +1567,7 @@
   }
   
   function onWheel(e) {
-    if (!isActive || !elementStack.length || e.target.closest("#pi-panel") || e.target.closest(".pi-note-card")) return;
+    if (!isActive || !elementStack.length || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) return;
     
     if (!e.altKey) return;
     
@@ -1583,7 +1583,7 @@
   }
   
   function onClick(e) {
-    if (!isActive || e.target.closest("#pi-panel") || e.target.closest(".pi-note-card")) return;
+    if (!isActive || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) return;
     
     e.preventDefault();
     e.stopPropagation();
@@ -1634,7 +1634,7 @@
   
   function handleResize() {
     updateBadges();
-    const panelHeight = document.getElementById("pi-panel")?.offsetHeight || 96;
+    const panelHeight = document.getElementById("agent-panel")?.offsetHeight || 96;
     
     openNotes.forEach(index => {
       const card = notesContainer.querySelector(`[data-index="${index}"]`);
@@ -2079,8 +2079,8 @@
       return null;
     }
     
-    // Skip pi-annotate UI elements
-    while (parent && isPiElement(parent)) {
+    // Skip agent-annotation UI elements
+    while (parent && isAgentElement(parent)) {
       parent = parent.parentElement;
     }
     if (!parent || parent === document.body || parent === document.documentElement) {
@@ -2243,10 +2243,10 @@
 
   function processEtchMutations(mutations) {
     for (const m of mutations) {
-      if (isPiElement(m.target) || isPiElement(m.target.parentElement)) continue;
+      if (isAgentElement(m.target) || isAgentElement(m.target.parentElement)) continue;
 
       if (m.type === "attributes") {
-        if (m.attributeName === "data-pi-changed") continue;
+        if (m.attributeName === "data-agent-changed") continue;
 
         if (m.attributeName === "style") {
           if (!etchStyleInitials.has(m.target)) {
@@ -2268,8 +2268,8 @@
             etchChangeCount++;
           }
         }
-        if (!m.target.hasAttribute("data-pi-changed")) {
-          m.target.setAttribute("data-pi-changed", "");
+        if (!m.target.hasAttribute("data-agent-changed")) {
+          m.target.setAttribute("data-agent-changed", "");
         }
       } else if (m.type === "characterData") {
         if (!etchTextInitials.has(m.target)) {
@@ -2277,18 +2277,18 @@
           etchChangeCount++;
         }
         const parent = m.target.parentElement;
-        if (parent && !isPiElement(parent) && !parent.hasAttribute("data-pi-changed")) {
-          parent.setAttribute("data-pi-changed", "");
+        if (parent && !isAgentElement(parent) && !parent.hasAttribute("data-agent-changed")) {
+          parent.setAttribute("data-agent-changed", "");
         }
       } else if (m.type === "childList") {
-        const hasNonPiNodes = [...m.addedNodes, ...m.removedNodes].some(n =>
-          n.nodeType !== Node.ELEMENT_NODE || !isPiElement(n)
+        const hasNonAgentNodes = [...m.addedNodes, ...m.removedNodes].some(n =>
+          n.nodeType !== Node.ELEMENT_NODE || !isAgentElement(n)
         );
-        if (hasNonPiNodes) {
+        if (hasNonAgentNodes) {
           etchChildListMutations.push(m);
           etchChangeCount++;
-          if (m.target.nodeType === Node.ELEMENT_NODE && !m.target.hasAttribute("data-pi-changed")) {
-            m.target.setAttribute("data-pi-changed", "");
+          if (m.target.nodeType === Node.ELEMENT_NODE && !m.target.hasAttribute("data-agent-changed")) {
+            m.target.setAttribute("data-agent-changed", "");
           }
         }
       }
@@ -2296,7 +2296,7 @@
   }
 
   function clearEtchMarkers() {
-    document.querySelectorAll("[data-pi-changed]").forEach(el => el.removeAttribute("data-pi-changed"));
+    document.querySelectorAll("[data-agent-changed]").forEach(el => el.removeAttribute("data-agent-changed"));
   }
 
   function startEtchCapture() {
@@ -2339,7 +2339,7 @@
   }
 
   function updateEtchCounter() {
-    const counter = document.getElementById("pi-etch-count");
+    const counter = document.getElementById("agent-etch-count");
     if (!counter) return;
     const text = etchChangeCount > 0 ? `${etchChangeCount}` : "";
     const display = etchChangeCount > 0 ? "inline-flex" : "none";
@@ -2353,8 +2353,8 @@
 
     for (let si = 0; si < document.styleSheets.length; si++) {
       const sheet = document.styleSheets[si];
-      // Skip pi-annotate's own injected styles
-      if (sheet.ownerNode?.id === "pi-styles") continue;
+      // Skip agent-annotation's own injected styles
+      if (sheet.ownerNode?.id === "agent-styles") continue;
 
       try {
         const rules = sheet.cssRules;
@@ -2658,7 +2658,7 @@
       if (initialValue === currentValue) continue;
 
       const parent = node.parentElement;
-      if (!parent || isPiElement(parent)) continue;
+      if (!parent || isAgentElement(parent)) continue;
 
       const truncate = (s) => s && s.length > 80 ? s.slice(0, 80) + "..." : s;
       changes.push({
@@ -2671,7 +2671,7 @@
     // Structural changes (deduplicated by parent)
     const structuralParents = new Set();
     for (const m of etchChildListMutations) {
-      if (isPiElement(m.target)) continue;
+      if (isAgentElement(m.target)) continue;
       if (!document.contains(m.target)) continue;
       structuralParents.add(m.target);
     }
@@ -2705,7 +2705,7 @@
 
     // Inject transition/animation killer to prevent visual artifacts
     const transitionKiller = document.createElement("style");
-    transitionKiller.id = "pi-etch-transition-killer";
+    transitionKiller.id = "agent-etch-transition-killer";
     transitionKiller.textContent = "*, *::before, *::after { transition: none !important; animation: none !important; }";
     (document.head || document.documentElement).appendChild(transitionKiller);
 
@@ -2767,7 +2767,7 @@
 
     for (let si = 0; si < document.styleSheets.length; si++) {
       const sheet = document.styleSheets[si];
-      // Skip sheets not in the snapshot (added by JS after recording started, or pi-annotate's own)
+      // Skip sheets not in the snapshot (added by JS after recording started, or agent-annotation's own)
       if (!rulesByNode.has(sheet.ownerNode)) continue;
 
       try {
@@ -2861,11 +2861,11 @@
         // Draw the original screenshot
         ctx.drawImage(img, 0, 0);
         
-        // Badge styling (matches .pi-marker-badge)
+        // Badge styling (matches .agent-marker-badge)
         const badgeSize = 28 * dpr;
         const fontSize = 13 * dpr;
-        const bgColor = "#8abeb7";     // --pi-accent (teal)
-        const textColor = "#1d1f21";   // --pi-bg-body (dark)
+        const bgColor = "#8abeb7";     // --agent-accent (teal)
+        const textColor = "#1d1f21";   // --agent-bg-body (dark)
         
         elements.forEach((sel, i) => {
           const element = sel.element;
@@ -2921,7 +2921,7 @@
   // ─────────────────────────────────────────────────────────────────────
   
   async function handleSubmit() {
-    const context = document.getElementById("pi-context")?.value?.trim() || "";
+    const context = document.getElementById("agent-context")?.value?.trim() || "";
     
     // Re-capture debug data for all elements if debug mode is on at submit time
     // (handles elements selected before debug was enabled)
@@ -2979,7 +2979,7 @@
           }
         }
       } catch (err) {
-        console.error("[pi-annotate] Screenshot failed:", err);
+        console.error("[agent-annotation] Screenshot failed:", err);
       }
     }
 
@@ -3022,7 +3022,7 @@
           warnings: warnings.length > 0 ? warnings : undefined,
         };
       } catch (err) {
-        console.error("[pi-annotate] Edit capture failed:", err);
+        console.error("[agent-annotation] Edit capture failed:", err);
       }
     }
     
@@ -3047,7 +3047,7 @@
     }
 
     if (!delivery?.ok) {
-      console.error("[pi-annotate] Submit failed:", delivery?.error || "Unknown error");
+      console.error("[agent-annotation] Submit failed:", delivery?.error || "Unknown error");
       if (markersContainer) markersContainer.style.display = "";
       if (notesContainer) notesContainer.style.display = "";
       if (connectorsEl) connectorsEl.style.display = "";
@@ -3070,9 +3070,9 @@
         reason: "user",
       });
     } catch (e) {
-      console.log("[pi-annotate] Could not send cancel (no connection)");
+      console.log("[agent-annotation] Could not send cancel (no connection)");
     }
   }
   
-  console.log("[pi-annotate] Content script ready (v0.4.0)");
+  console.log("[agent-annotation] Content script ready (v0.4.0)");
 })();

@@ -1,4 +1,4 @@
-// Pi Annotate - Options Script
+// Agent Annotation - Options Script
 
 const DEFAULT_ENDPOINT = "http://localhost:3000/annotations";
 

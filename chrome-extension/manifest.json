@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Pi Annotate",
+  "name": "Agent Annotation",
   "version": "0.4.0",
   "description": "Visual annotation tool that submits annotations to an HTTP endpoint",
   
@@ -36,7 +36,7 @@
   },
   
   "action": {
-    "default_title": "Start Pi Annotate"
+    "default_title": "Start Agent Annotation"
   },
   "options_page": "options.html",
    

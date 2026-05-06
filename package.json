@@ -1,5 +1,5 @@
 {
-  "name": "pi-annotate",
+  "name": "agent-annotation",
   "version": "0.4.3",
   "description": "Visual annotation tool that submits browser annotations to an HTTP endpoint",
   "type": "module",
@@ -7,12 +7,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nicobailon/pi-annotate.git"
+    "url": "git+https://github.com/nicobailon/agent-annotation.git"
   },
   "bugs": {
-    "url": "https://github.com/nicobailon/pi-annotate/issues"
+    "url": "https://github.com/nicobailon/agent-annotation/issues"
   },
-  "homepage": "https://github.com/nicobailon/pi-annotate#readme",
+  "homepage": "https://github.com/nicobailon/agent-annotation#readme",
   "keywords": [
     "annotation",
     "visual-debugging",
