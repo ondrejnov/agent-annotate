@@ -249,4 +249,9 @@ chrome.commands.onCommand.addListener((command) => {
   }
 });
 
+// Clicking the extension icon starts annotation immediately.
+chrome.action.onClicked.addListener(() => {
+  startAnnotation({ type: "START_ANNOTATION" });
+});
+
 console.log("[pi-annotate] Background script loaded");
