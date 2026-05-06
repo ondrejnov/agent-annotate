@@ -71,7 +71,7 @@
   
   let isActive = false;
   let requestId = null;
-  let multiSelectMode = false;
+  let multiSelectMode = true;
   let screenshotMode = "each"; // "each" | "full" | "none"
   
   // Element picker state
@@ -732,7 +732,7 @@
     openNotes = new Set();
     notePositions = new Map();
     dragState = null;
-    multiSelectMode = false;
+    multiSelectMode = true;
     screenshotMode = "each";
     debugMode = false;
     resetCSSVarCache();
@@ -759,8 +759,8 @@
     const singleBtn = document.getElementById("agent-mode-single");
     const multiBtn = document.getElementById("agent-mode-multi");
     if (singleBtn && multiBtn) {
-      singleBtn.classList.add("active");
-      multiBtn.classList.remove("active");
+      singleBtn.classList.remove("active");
+      multiBtn.classList.add("active");
     }
     
     // Reset screenshot mode buttons
@@ -829,7 +829,7 @@
     notePositions = new Map();
     dragState = null;
     requestId = null;
-    multiSelectMode = false;
+    multiSelectMode = true;
     screenshotMode = "each";
     debugMode = false;
     resetCSSVarCache();
@@ -891,8 +891,8 @@
       </div>
       <div class="agent-toolbar">
         <div class="agent-mode-toggle">
-          <button class="agent-mode-btn active" id="agent-mode-single" title="Click replaces selection">Single</button>
-          <button class="agent-mode-btn" id="agent-mode-multi" title="Click adds to selection">Multi</button>
+          <button class="agent-mode-btn" id="agent-mode-single" title="Click replaces selection">Single</button>
+          <button class="agent-mode-btn active" id="agent-mode-multi" title="Click adds to selection">Multi</button>
         </div>
         <div class="agent-screenshot-toggle">
           <span class="agent-toggle-label">Screenshot</span>
