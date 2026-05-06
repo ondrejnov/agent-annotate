@@ -28,6 +28,7 @@
   const Z_INDEX_TOOLTIP = 2147483647;
   const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
   const ALT_KEY_LABEL = IS_MAC ? "⌥" : "Alt";
+  const REACT_COMPONENT_MARKER_ATTR = "data-agent-react-component-marker";
   
   // HTML escape to prevent XSS when inserting user-controlled content
   function escapeHtml(str) {
@@ -63,6 +64,21 @@
       selectorEl.textContent = label;
       selectorEl.title = sel.selector;
     }
+    updateNoteCardReactComponent(index);
+  }
+
+  function updateNoteCardReactComponent(index) {
+    const sel = selectedElements[index];
+    const card = notesContainer?.querySelector(`[data-index="${index}"]`);
+    if (!sel || !card) return;
+
+    const reactEl = card.querySelector(".agent-note-react");
+    if (!reactEl) return;
+
+    const label = formatReactComponentLabel(sel.reactComponent);
+    reactEl.textContent = label;
+    reactEl.title = formatReactComponentTitle(sel.reactComponent);
+    reactEl.style.display = label ? "" : "none";
   }
   
   // ─────────────────────────────────────────────────────────────────────
@@ -73,6 +89,7 @@
   let requestId = null;
   let multiSelectMode = true;
   let screenshotMode = "each"; // "each" | "full" | "none"
+  let reactMarkerSeq = 0;
   
   // Element picker state
   let elementStack = [];
@@ -346,6 +363,15 @@
     .agent-note-selector:hover {
       color: var(--agent-accent);
       text-decoration: underline;
+    }
+
+    .agent-note-react {
+      margin-bottom: 8px;
+      color: var(--agent-accent);
+      font: 11px/1.35 var(--agent-font-mono);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     
     .agent-note-screenshot,
@@ -1101,6 +1127,8 @@
     }
     
     const label = sel.id ? `#${sel.id}` : `${sel.tag}${sel.classes[0] ? "." + sel.classes[0] : ""}`;
+    const reactLabel = formatReactComponentLabel(sel.reactComponent);
+    const reactTitle = formatReactComponentTitle(sel.reactComponent);
     const hasScreenshot = elementScreenshots.get(index) !== false;
     const comment = elementComments.get(index) || "";
     
@@ -1120,6 +1148,7 @@
         <button class="agent-note-close" title="Remove element">×</button>
       </div>
       <div class="agent-note-body">
+        <div class="agent-note-react" title="${escapeHtml(reactTitle)}" style="${reactLabel ? "" : "display:none"}">${escapeHtml(reactLabel)}</div>
         <textarea class="agent-note-textarea" placeholder="Describe changes for this element...">${escapeHtml(comment)}</textarea>
       </div>
     `;
@@ -1306,8 +1335,10 @@
       }
       
       console.log("[agent-annotation] Expanding to parent:", parent.tagName);
-      selectedElements[index] = createSelectionData(parent);
+      const nextSelection = createSelectionData(parent);
+      selectedElements[index] = nextSelection;
       updateNoteCardLabel(index);
+      enrichSelectionReactComponent(nextSelection);
       updateBadges();
       updateConnectors();
     } else {
@@ -1325,8 +1356,10 @@
     
     if (children.length > 0) {
       console.log("[agent-annotation] Contracting to child:", children[0].tagName);
-      selectedElements[index] = createSelectionData(children[0]);
+      const nextSelection = createSelectionData(children[0]);
+      selectedElements[index] = nextSelection;
       updateNoteCardLabel(index);
+      enrichSelectionReactComponent(nextSelection);
       updateBadges();
       updateConnectors();
     } else {
@@ -1672,7 +1705,9 @@
   // ─────────────────────────────────────────────────────────────────────
   
   function selectElement(el) {
-    selectedElements.push(createSelectionData(el));
+    const selection = createSelectionData(el);
+    selectedElements.push(selection);
+    enrichSelectionReactComponent(selection);
   }
   
   function generateSelector(el) {
@@ -1721,6 +1756,134 @@
       attrs[attr.name] = attr.value.length > 200 ? attr.value.slice(0, 200) + "…" : attr.value;
     }
     return attrs;
+  }
+
+  function formatReactSource(source, compact = true) {
+    if (!source?.fileName) return "";
+
+    let fileName = String(source.fileName).split(/[?#]/)[0].replace(/\\/g, "/");
+    try {
+      if (/^(https?|file):\/\//.test(fileName)) {
+        fileName = new URL(fileName).pathname;
+      }
+    } catch {}
+
+    if (compact) {
+      const parts = fileName.split("/").filter(Boolean);
+      if (parts.length > 2) fileName = parts.slice(-2).join("/");
+      else if (parts.length) fileName = parts.join("/");
+    }
+
+    const line = source.lineNumber ? `:${source.lineNumber}` : "";
+    const column = source.columnNumber ? `:${source.columnNumber}` : "";
+    return `${fileName}${line}${column}`;
+  }
+
+  function formatReactComponentLabel(info) {
+    if (!info?.name) return "";
+    const source = formatReactSource(info.jsxSource || info.source);
+    return source ? `${info.name} @ ${source}` : info.name;
+  }
+
+  function formatReactComponentTitle(info) {
+    if (!info?.name) return "";
+
+    const lines = [`React component: ${info.name}`];
+    if (Array.isArray(info.componentStack) && info.componentStack.length) {
+      lines.push(`Stack: ${info.componentStack.join(" > ")}`);
+    }
+
+    const jsxSource = formatReactSource(info.jsxSource, false);
+    if (jsxSource) lines.push(`JSX: ${jsxSource}`);
+
+    const source = formatReactSource(info.source, false);
+    if (source && source !== jsxSource) lines.push(`Source: ${source}`);
+
+    return lines.join("\n");
+  }
+
+  function createReactMarker() {
+    reactMarkerSeq += 1;
+    return `agent-react-${Date.now()}-${reactMarkerSeq}`;
+  }
+
+  async function requestReactComponentInfo(elements) {
+    const marked = [];
+
+    elements.forEach((el, index) => {
+      if (!el || !(el instanceof Element) || !document.contains(el)) return;
+
+      const marker = createReactMarker();
+      el.setAttribute(REACT_COMPONENT_MARKER_ATTR, marker);
+      marked.push({ el, index, marker });
+    });
+
+    if (!marked.length) return [];
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "GET_REACT_COMPONENT_INFO",
+        attr: REACT_COMPONENT_MARKER_ATTR,
+        markers: marked.map(item => item.marker),
+      });
+
+      if (!response?.ok || !Array.isArray(response.components)) return [];
+
+      const byMarker = new Map(
+        response.components.map(item => [item.marker, item.reactComponent || null])
+      );
+
+      return marked.map(item => ({
+        index: item.index,
+        reactComponent: byMarker.get(item.marker) || null,
+      }));
+    } catch (err) {
+      console.log("[agent-annotation] React component lookup failed:", err);
+      return [];
+    } finally {
+      marked.forEach(({ el, marker }) => {
+        if (el.getAttribute(REACT_COMPONENT_MARKER_ATTR) === marker) {
+          el.removeAttribute(REACT_COMPONENT_MARKER_ATTR);
+        }
+      });
+    }
+  }
+
+  async function enrichSelectionReactComponent(selection) {
+    if (!selection?.element || selection.reactComponent || !document.contains(selection.element)) return;
+
+    const results = await requestReactComponentInfo([selection.element]);
+    const reactComponent = results[0]?.reactComponent;
+    if (!reactComponent || !selectedElements.includes(selection)) return;
+
+    selection.reactComponent = reactComponent;
+    updateNoteCardReactComponent(selectedElements.indexOf(selection));
+  }
+
+  async function enrichReactComponentInfo() {
+    const pending = selectedElements
+      .map((selection, index) => ({ selection, index }))
+      .filter(({ selection }) => (
+        selection?.element &&
+        !selection.reactComponent &&
+        document.contains(selection.element)
+      ));
+
+    if (!pending.length) return;
+
+    const results = await requestReactComponentInfo(
+      pending.map(item => item.selection.element)
+    );
+
+    results.forEach(({ index, reactComponent }) => {
+      if (!reactComponent) return;
+
+      const selection = pending[index]?.selection;
+      if (!selection || !selectedElements.includes(selection)) return;
+
+      selection.reactComponent = reactComponent;
+      updateNoteCardReactComponent(selectedElements.indexOf(selection));
+    });
   }
   
   function createSelectionData(el) {
@@ -2246,7 +2409,7 @@
       if (isAgentElement(m.target) || isAgentElement(m.target.parentElement)) continue;
 
       if (m.type === "attributes") {
-        if (m.attributeName === "data-agent-changed") continue;
+        if (m.attributeName === "data-agent-changed" || m.attributeName === REACT_COMPONENT_MARKER_ATTR) continue;
 
         if (m.attributeName === "style") {
           if (!etchStyleInitials.has(m.target)) {
@@ -2935,6 +3098,8 @@
         }
       });
     }
+
+    await enrichReactComponentInfo();
 
     const elements = selectedElements.map((sel, i) => {
       const { element, ...rest } = sel;

@@ -68,6 +68,142 @@ async function getEndpointStatus() {
   }
 }
 
+function detectReactComponentsInPage(attr, markers) {
+  function getFiberFromElement(el) {
+    const keys = Object.keys(el);
+    const fiberKey = keys.find(key => (
+      key.startsWith("__reactFiber$") ||
+      key.startsWith("__reactInternalInstance$") ||
+      key.startsWith("__reactContainer$")
+    ));
+
+    return fiberKey ? el[fiberKey] : null;
+  }
+
+  function getDisplayName(type, depth = 0) {
+    if (!type || depth > 5) return null;
+    if (typeof type === "string") return null;
+    if (typeof type === "function") return type.displayName || type.name || null;
+    if (typeof type !== "object") return null;
+
+    return type.displayName ||
+      type.name ||
+      getDisplayName(type.render, depth + 1) ||
+      getDisplayName(type.type, depth + 1) ||
+      getDisplayName(type._payload?._result, depth + 1) ||
+      type._context?.displayName ||
+      null;
+  }
+
+  function getDebugSourceFromStack(stack) {
+    if (!stack) return null;
+
+    const lines = String(stack).split("\n");
+    for (const line of lines) {
+      const match = line.match(/\(?((?:https?:\/\/|file:\/\/|\/|[a-zA-Z]:[\\/])[^()\s]+?\.(?:tsx|jsx|ts|js)(?:\?[^:)]*)?):(\d+):(\d+)\)?/);
+      if (!match || /node_modules|react-dom|react_jsx/.test(match[1])) continue;
+
+      return {
+        fileName: match[1],
+        lineNumber: Number(match[2]),
+        columnNumber: Number(match[3]),
+      };
+    }
+
+    return null;
+  }
+
+  function getDebugSource(fiber) {
+    const source = fiber?._debugSource;
+    if (!source?.fileName) {
+      const debugStack = fiber?._debugStack?.stack || fiber?._debugStack;
+      return getDebugSourceFromStack(debugStack);
+    }
+
+    return {
+      fileName: String(source.fileName),
+      lineNumber: typeof source.lineNumber === "number" ? source.lineNumber : null,
+      columnNumber: typeof source.columnNumber === "number" ? source.columnNumber : null,
+    };
+  }
+
+  function getComponentStack(fiber) {
+    const stack = [];
+    let current = fiber;
+
+    while (current && stack.length < 30) {
+      const name = getDisplayName(current.elementType || current.type);
+      if (name) {
+        stack.push({ name, source: getDebugSource(current) });
+      }
+      current = current.return;
+    }
+
+    return stack;
+  }
+
+  function getReactComponentInfo(el) {
+    const fiber = getFiberFromElement(el);
+    if (!fiber) return null;
+
+    const componentStack = getComponentStack(fiber);
+    const nearestComponent = componentStack[0] || null;
+    if (!nearestComponent?.name) return null;
+
+    return {
+      name: nearestComponent.name,
+      componentStack: componentStack.map(item => item.name),
+      source: nearestComponent.source,
+      jsxSource: getDebugSource(fiber) || nearestComponent.source,
+    };
+  }
+
+  if (!/^data-[a-z0-9-]+$/.test(attr) || !Array.isArray(markers)) return [];
+
+  return markers.map(marker => {
+    const safeMarker = String(marker || "");
+    const el = document.querySelector(`[${attr}="${safeMarker}"]`);
+    return {
+      marker: safeMarker,
+      reactComponent: el ? getReactComponentInfo(el) : null,
+    };
+  });
+}
+
+async function getReactComponentInfo(msg, sender) {
+  if (!sender.tab?.id) {
+    return { ok: false, error: "No tab ID" };
+  }
+
+  const attr = typeof msg.attr === "string" ? msg.attr : "";
+  const markers = Array.isArray(msg.markers)
+    ? msg.markers
+        .filter(marker => typeof marker === "string" && /^[a-zA-Z0-9-]+$/.test(marker))
+        .slice(0, 100)
+    : [];
+
+  if (!/^data-[a-z0-9-]+$/.test(attr) || !markers.length) {
+    return { ok: true, components: [] };
+  }
+
+  const target = { tabId: sender.tab.id };
+  if (typeof sender.frameId === "number") {
+    target.frameIds = [sender.frameId];
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target,
+    world: "MAIN",
+    func: detectReactComponentsInPage,
+    args: [attr, markers],
+  });
+
+  return {
+    ok: true,
+    components: results?.[0]?.result || [],
+  };
+}
+
 async function postAnnotations(msg) {
   const { endpointUrl, requestMode, jsonrpcMethod } = await getRequestSettings();
   const annotationPayload = {
@@ -229,6 +365,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "START_ANNOTATION") {
     startAnnotation(msg);
     return;
+  }
+
+  if (msg.type === "GET_REACT_COMPONENT_INFO") {
+    getReactComponentInfo(msg, sender)
+      .then(sendResponse)
+      .catch((err) => {
+        console.error("[agent-annotation] React component lookup failed:", err);
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      });
+    return true;
   }
 
   const requestId = getRequestId(msg);

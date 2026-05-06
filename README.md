@@ -88,6 +88,20 @@ The extension sends a `POST` request with `Content-Type: application/json` when 
           "color": "oklch(0.145 0 0)",
           "backgroundColor": "oklab(0.984 -0.00113071 -0.00277876 / 0.4)"
         },
+        "reactComponent": {
+          "name": "TaskCard",
+          "componentStack": ["TaskCard", "TaskList", "RouteComponent"],
+          "source": {
+            "fileName": "/app/components/task-card.tsx",
+            "lineNumber": 42,
+            "columnNumber": 7
+          },
+          "jsxSource": {
+            "fileName": "/app/components/task-card.tsx",
+            "lineNumber": 42,
+            "columnNumber": 7
+          }
+        },
         "comment": "lepsi"
       }
     ],
@@ -148,6 +162,27 @@ If the endpoint returns a non-2xx response or the request fails, the annotation 
 
 **Context Capture**: Each element automatically gets box model breakdown, accessibility info, all HTML attributes, and key CSS styles. Enable **Debug mode** for computed styles, parent context, and CSS variables.
 
+**React Component Capture**: On React pages, selected elements include the nearest React component name, component stack, and JSX source when React exposes that debug data (best in Remix/Vite development builds).
+
+## React / Remix / Vite
+
+For React apps, the extension temporarily marks the selected DOM node, then asks the background worker to run a short helper in the page's `MAIN` world. That helper reads React Fiber data directly from the page, finds the nearest named React component, and returns it to the content script.
+
+This is important for Remix + Vite because the annotation UI itself runs as a content script in an isolated world. Without the `MAIN` world bridge, the extension cannot reliably read React's internal properties from the page.
+
+What you usually get back in development:
+
+1. `reactComponent.name`: nearest named component such as `TaskCard`
+2. `reactComponent.componentStack`: nearest-to-parent component chain
+3. `reactComponent.source`: best available source location for that component
+4. `reactComponent.jsxSource`: JSX callsite when React exposes debug source metadata
+
+Notes:
+
+1. This works best in Remix/Vite development builds.
+2. In production builds, component names may be minified and source metadata may be missing.
+3. Non-React pages simply return no `reactComponent` field.
+
 **Inline Note Cards**: Draggable floating cards with per-element comments, SVG connectors linking notes to elements, click-to-scroll, and per-element screenshot toggles.
 
 **Screenshots**: Individual crops per element or full-page mode with numbered badges drawn on the screenshot.
@@ -161,6 +196,7 @@ Browser Extension
   popup.html/popup.js       endpoint and request configuration
   background.js             screenshot capture + HTTP POST
   content.js                annotation UI injected into pages
+  MAIN world helper         React Fiber lookup for selected elements
 ```
 
 ## Development
