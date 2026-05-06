@@ -54,7 +54,8 @@
       display: flex;
       gap: 8px;
     }
-    input {
+    input,
+    select {
       flex: 1;
       min-width: 0;
       background: #27272a;
@@ -66,7 +67,9 @@
       padding: 10px 12px;
       outline: none;
     }
-    input:focus { border-color: #6366f1; }
+    input:focus,
+    select:focus { border-color: #6366f1; }
+    select { width: 100%; }
     button {
       background: #6366f1;
       border: 1px solid #6366f1;
@@ -97,6 +100,7 @@
       font-size: 12px;
       line-height: 1.5;
     }
+    .section { margin-top: 16px; }
   </style>
 </head>
 <body>
@@ -117,8 +121,25 @@
     </div>
     <div class="message" id="endpoint-message"></div>
 
+    <div class="section">
+      <div class="label">Request Type</div>
+      <div class="field">
+        <select id="request-mode">
+          <option value="post">Plain POST</option>
+          <option value="jsonrpc">JSON-RPC</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="section" id="jsonrpc-method-section">
+      <div class="label">JSON-RPC Method</div>
+      <div class="field">
+        <input type="text" id="jsonrpc-method" placeholder="annotations">
+      </div>
+    </div>
+
     <div class="hint">
-      On submit, the extension sends a JSON POST request to the configured endpoint.
+      On submit, the extension sends annotations using the selected request type.
     </div>
   </main>
 

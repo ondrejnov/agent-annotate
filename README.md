@@ -15,14 +15,14 @@ Click elements, add comments, submit. The browser extension sends selectors, box
 1. Open the extensions page in Google Chrome, Google Chrome for Testing, Edge, or Chromium, and enable **Developer mode**.
 2. Click **Load unpacked** and select the `chrome-extension/` folder.
 3. Click the **Agent Annotation** icon in the toolbar.
-4. Set the HTTP endpoint URL, for example `http://localhost:3000/annotations`, and click **Save**.
+4. Set the HTTP endpoint URL, for example `http://localhost:3000/annotations`, choose plain `POST` or `JSON-RPC`, and click **Save**.
 5. Click **Start Annotation** or use `Ctrl+Shift+P` / `Cmd+Shift+P`.
 
 No agent or native messaging host is required by the browser extension.
 
 ## Endpoint
 
-The extension sends a `POST` request with `Content-Type: application/json` when the user submits annotations.
+The extension sends a `POST` request with `Content-Type: application/json` when the user submits annotations. By default it sends a plain JSON POST payload:
 
 ```json
 {
@@ -109,6 +109,23 @@ The extension sends a `POST` request with `Content-Type: application/json` when 
 }
 ```
 
+If **JSON-RPC** is selected, the same annotation payload is sent in `params` using JSON-RPC 2.0. The method name is configurable and defaults to `annotations`.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "annotations",
+  "params": {
+    "source": "agent-annotation",
+    "type": "annotations",
+    "timestamp": "2026-05-06T08:08:46.888Z",
+    "requestId": null,
+    "result": {}
+  },
+  "id": null
+}
+```
+
 If the endpoint returns a non-2xx response or the request fails, the annotation UI stays open so the user can retry without losing the current annotation work.
 
 ## Usage
@@ -141,7 +158,7 @@ If the endpoint returns a non-2xx response or the request fails, the annotation 
 
 ```
 Browser Extension
-  popup.html/popup.js       endpoint configuration
+  popup.html/popup.js       endpoint and request configuration
   background.js             screenshot capture + HTTP POST
   content.js                annotation UI injected into pages
 ```

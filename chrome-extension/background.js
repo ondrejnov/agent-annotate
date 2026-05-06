@@ -6,6 +6,8 @@
  */
 
 const DEFAULT_ENDPOINT = "http://localhost:3000/annotations";
+const DEFAULT_REQUEST_MODE = "post";
+const DEFAULT_JSONRPC_METHOD = "annotations";
 const requestTabs = new Map();
 
 function getRequestId(msg) {
@@ -40,6 +42,20 @@ async function getEndpointUrl() {
   return normalizeEndpoint(stored.annotationEndpoint);
 }
 
+async function getRequestSettings() {
+  const stored = await chrome.storage.local.get({
+    annotationEndpoint: DEFAULT_ENDPOINT,
+    annotationRequestMode: DEFAULT_REQUEST_MODE,
+    annotationJsonrpcMethod: DEFAULT_JSONRPC_METHOD,
+  });
+
+  return {
+    endpointUrl: normalizeEndpoint(stored.annotationEndpoint),
+    requestMode: stored.annotationRequestMode === "jsonrpc" ? "jsonrpc" : "post",
+    jsonrpcMethod: String(stored.annotationJsonrpcMethod || DEFAULT_JSONRPC_METHOD).trim() || DEFAULT_JSONRPC_METHOD,
+  };
+}
+
 async function getEndpointStatus() {
   try {
     const endpointUrl = await getEndpointUrl();
@@ -53,19 +69,29 @@ async function getEndpointStatus() {
 }
 
 async function postAnnotations(msg) {
-  const endpointUrl = await getEndpointUrl();
+  const { endpointUrl, requestMode, jsonrpcMethod } = await getRequestSettings();
+  const annotationPayload = {
+    source: "agent-annotation",
+    type: "annotations",
+    timestamp: new Date().toISOString(),
+    requestId: getRequestId(msg),
+    result: msg.result,
+  };
+  const requestBody = requestMode === "jsonrpc"
+    ? {
+        jsonrpc: "2.0",
+        method: jsonrpcMethod,
+        params: annotationPayload,
+        id: annotationPayload.requestId,
+      }
+    : annotationPayload;
+
   const response = await fetch(endpointUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      source: "agent-annotation",
-      type: "annotations",
-      timestamp: new Date().toISOString(),
-      requestId: getRequestId(msg),
-      result: msg.result,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   const responseText = await response.text().catch(() => "");
@@ -77,6 +103,7 @@ async function postAnnotations(msg) {
   return {
     ok: true,
     endpointUrl,
+    requestMode,
     status: response.status,
     response: responseText,
   };
