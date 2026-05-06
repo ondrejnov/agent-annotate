@@ -1,13 +1,11 @@
 /**
  * Pi Annotate - Background Service Worker
- * 
- * Connects to native messaging host and forwards messages between
- * the native host (Pi) and content scripts.
+ *
+ * Injects the annotation UI, captures screenshots, and submits annotation
+ * payloads to a configured HTTP endpoint.
  */
 
-let nativePort = null;
-let pendingPing = null;
-let lastNativeDisconnectError = "";
+const DEFAULT_ENDPOINT = "http://localhost:3000/annotations";
 const requestTabs = new Map();
 
 function getRequestId(msg) {
@@ -19,65 +17,72 @@ function isRestrictedUrl(url) {
   return /^(chrome|chrome-extension|edge|about|devtools|view-source):/.test(url);
 }
 
-function resolvePendingPing(result) {
-  if (!pendingPing) return;
-  clearTimeout(pendingPing.timeoutId);
-  pendingPing.resolve(result);
-  pendingPing = null;
+function normalizeEndpoint(rawUrl) {
+  const value = String(rawUrl || "").trim();
+  if (!value) throw new Error("HTTP endpoint is not configured");
+
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("HTTP endpoint must be a valid URL");
+  }
+
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("HTTP endpoint must start with http:// or https://");
+  }
+
+  return url.toString();
 }
 
-function pingNative() {
-  if (!nativePort) {
-    return Promise.resolve({
-      connected: false,
-      error: lastNativeDisconnectError || "Native host not connected",
-    });
-  }
+async function getEndpointUrl() {
+  const stored = await chrome.storage.local.get({ annotationEndpoint: DEFAULT_ENDPOINT });
+  return normalizeEndpoint(stored.annotationEndpoint);
+}
 
-  if (pendingPing) {
-    return pendingPing.promise;
-  }
-
-  let resolvePing;
-  const promise = new Promise((resolve) => {
-    resolvePing = resolve;
-  });
-
-  const timeoutId = setTimeout(() => {
-    if (!pendingPing || pendingPing.promise !== promise) return;
-    pendingPing = null;
-    resolvePing({ connected: false, error: "Timeout - native host not responding" });
-  }, 3000);
-
-  pendingPing = { promise, resolve: resolvePing, timeoutId };
-
+async function getEndpointStatus() {
   try {
-    nativePort.postMessage({ type: "PING" });
+    const endpointUrl = await getEndpointUrl();
+    return { connected: true, endpointUrl };
   } catch (err) {
-    clearTimeout(timeoutId);
-    pendingPing = null;
-    resolvePing({
+    return {
       connected: false,
       error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  return promise;
-}
-
-function sendToNative(msg) {
-  if (!nativePort) {
-    console.error("[pi-annotate] Cannot send to native host - not connected");
-    return;
-  }
-  try {
-    nativePort.postMessage(msg);
-  } catch (err) {
-    console.error("[pi-annotate] Failed to send to native host:", err);
+    };
   }
 }
 
-// Send message to content script, injecting it first if needed
+async function postAnnotations(msg) {
+  const endpointUrl = await getEndpointUrl();
+  const response = await fetch(endpointUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      source: "pi-annotate",
+      type: "annotations",
+      timestamp: new Date().toISOString(),
+      requestId: getRequestId(msg),
+      result: msg.result,
+    }),
+  });
+
+  const responseText = await response.text().catch(() => "");
+  if (!response.ok) {
+    const detail = responseText ? `: ${responseText.slice(0, 300)}` : "";
+    throw new Error(`Endpoint returned ${response.status} ${response.statusText}${detail}`);
+  }
+
+  return {
+    ok: true,
+    endpointUrl,
+    status: response.status,
+    response: responseText,
+  };
+}
+
+// Send message to content script, injecting it first if needed.
 async function sendToContentScript(tabId, msg) {
   try {
     await chrome.tabs.sendMessage(tabId, msg);
@@ -93,15 +98,12 @@ async function sendToContentScript(tabId, msg) {
     } catch (injectErr) {
       console.error("[pi-annotate] Failed to inject:", injectErr.message);
       const requestId = getRequestId(msg);
-      if (requestId) {
-        requestTabs.delete(requestId);
-        sendToNative({ type: "CANCEL", requestId, reason: `Cannot inject into tab: ${injectErr.message}` });
-      }
+      if (requestId) requestTabs.delete(requestId);
     }
   }
 }
 
-// Wait for a tab to finish loading, then inject content script
+// Wait for a tab to finish loading, then inject content script.
 function injectAfterLoad(tabId, msg, requestId) {
   let timeoutId = null;
   const listener = (updatedTabId, info) => {
@@ -119,14 +121,57 @@ function injectAfterLoad(tabId, msg, requestId) {
   timeoutId = setTimeout(() => {
     chrome.tabs.onUpdated.removeListener(listener);
     console.log("[pi-annotate] Navigation timeout - listener removed");
-    if (requestId) {
-      requestTabs.delete(requestId);
-      sendToNative({ type: "CANCEL", requestId, reason: "navigation_timeout" });
-    }
+    if (requestId) requestTabs.delete(requestId);
   }, 30000);
 }
 
-// Toggle annotation picker on active tab (used by popup + keyboard shortcut)
+async function startAnnotation(msg) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const requestId = getRequestId(msg);
+
+  if (!tab?.id) {
+    console.log("[pi-annotate] No active tab found");
+    return;
+  }
+
+  const currentUrl = tab.url;
+  const restricted = isRestrictedUrl(currentUrl);
+  const tabId = requestId && requestTabs.has(requestId) ? requestTabs.get(requestId) : tab.id;
+
+  if (msg.url && (restricted || currentUrl !== msg.url)) {
+    if (restricted) {
+      console.log("[pi-annotate] Opening new tab:", msg.url);
+      chrome.tabs.create({ url: msg.url }, (createdTab) => {
+        if (chrome.runtime.lastError) {
+          console.error("[pi-annotate] Failed to create tab:", chrome.runtime.lastError.message);
+          return;
+        }
+        injectAfterLoad(createdTab.id, msg, requestId);
+      });
+    } else {
+      console.log("[pi-annotate] Navigating to:", msg.url);
+      chrome.tabs.update(tabId, { url: msg.url }, (updatedTab) => {
+        if (chrome.runtime.lastError) {
+          console.error("[pi-annotate] Failed to navigate:", chrome.runtime.lastError.message);
+          return;
+        }
+        injectAfterLoad(updatedTab.id, msg, requestId);
+      });
+    }
+    return;
+  }
+
+  if (restricted) {
+    console.log("[pi-annotate] Cannot annotate restricted tab:", currentUrl);
+    return;
+  }
+
+  console.log("[pi-annotate] Activating on current tab:", currentUrl);
+  if (requestId) requestTabs.set(requestId, tabId);
+  await sendToContentScript(tabId, msg);
+}
+
+// Toggle annotation picker on active tab (used by popup + keyboard shortcut).
 async function togglePicker() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -140,95 +185,12 @@ async function togglePicker() {
   }
 }
 
-function connectNative() {
-  if (nativePort) return;
-
-  console.log("[pi-annotate] Connecting to native host...");
-  const port = chrome.runtime.connectNative("com.pi.annotate");
-  nativePort = port;
-  
-  port.onMessage.addListener((msg) => {
-    if (msg?.type === "PONG") {
-      lastNativeDisconnectError = "";
-      resolvePendingPing({ connected: true });
-      return;
-    }
-
-    console.log("[pi-annotate] From native host:", msg);
-    
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (!tabs[0]?.id) {
-        console.log("[pi-annotate] No active tab found");
-        const requestId = getRequestId(msg);
-        if (requestId) {
-          sendToNative({ type: "CANCEL", requestId, reason: "No active browser tab found" });
-        }
-        return;
-      }
-      
-      const requestId = getRequestId(msg);
-      const tabId = requestId && requestTabs.has(requestId) ? requestTabs.get(requestId) : tabs[0].id;
-      const currentUrl = tabs[0].url;
-      
-      if (msg.type === "START_ANNOTATION") {
-        const restricted = isRestrictedUrl(currentUrl);
-
-        if (msg.url && (restricted || currentUrl !== msg.url)) {
-          if (restricted) {
-            console.log("[pi-annotate] Opening new tab:", msg.url);
-            chrome.tabs.create({ url: msg.url }, (tab) => {
-              if (chrome.runtime.lastError) {
-                console.error("[pi-annotate] Failed to create tab:", chrome.runtime.lastError.message);
-                sendToNative({ type: "CANCEL", requestId, reason: chrome.runtime.lastError.message });
-                return;
-              }
-              injectAfterLoad(tab.id, msg, requestId);
-            });
-          } else {
-            console.log("[pi-annotate] Navigating to:", msg.url);
-            chrome.tabs.update(tabId, { url: msg.url }, (tab) => {
-              if (chrome.runtime.lastError) {
-                console.error("[pi-annotate] Failed to navigate:", chrome.runtime.lastError.message);
-                sendToNative({ type: "CANCEL", requestId, reason: chrome.runtime.lastError.message });
-                return;
-              }
-              injectAfterLoad(tab.id, msg, requestId);
-            });
-          }
-        } else if (restricted) {
-          console.log("[pi-annotate] Cannot annotate restricted tab:", currentUrl);
-          if (requestId) {
-            sendToNative({ type: "CANCEL", requestId, reason: "Current tab cannot be annotated (restricted URL). Provide a URL." });
-          }
-        } else {
-          console.log("[pi-annotate] Activating on current tab:", currentUrl);
-          if (requestId) requestTabs.set(requestId, tabId);
-          sendToContentScript(tabId, msg);
-        }
-      } else {
-        sendToContentScript(tabId, msg);
-      }
-    });
-  });
-  
-  port.onDisconnect.addListener(() => {
-    const error = chrome.runtime.lastError?.message || "Native host disconnected unexpectedly";
-    console.log("[pi-annotate] Native host disconnected", error);
-    lastNativeDisconnectError = error;
-    resolvePendingPing({ connected: false, error });
-    if (nativePort === port) {
-      nativePort = null;
-    }
-    setTimeout(connectNative, 2000);
-  });
-}
-
-// Handle messages from content script and popup
+// Handle messages from content script and popup.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   console.log("[pi-annotate] Message:", msg.type);
-  
+
   if (msg.type === "CHECK_CONNECTION") {
-    pingNative().then(sendResponse);
+    getEndpointStatus().then(sendResponse);
     return true;
   }
 
@@ -236,9 +198,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     togglePicker();
     return;
   }
-  
+
+  if (msg.type === "START_ANNOTATION") {
+    startAnnotation(msg);
+    return;
+  }
+
   const requestId = getRequestId(msg);
-  
+
   if (msg.type === "CAPTURE_SCREENSHOT") {
     if (!sender.tab?.windowId) {
       console.log("[pi-annotate] Screenshot failed: No window ID");
@@ -256,21 +223,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
-  
-  if (["ANNOTATIONS_COMPLETE", "CANCEL"].includes(msg.type)) {
+
+  if (msg.type === "ANNOTATIONS_COMPLETE") {
     if (requestId) requestTabs.delete(requestId);
-    console.log("[pi-annotate] Forwarding to native host:", msg.type);
-    sendToNative(msg);
+    console.log("[pi-annotate] Posting annotations to HTTP endpoint");
+    postAnnotations(msg)
+      .then(sendResponse)
+      .catch((err) => {
+        console.error("[pi-annotate] Failed to post annotations:", err);
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      });
+    return true;
+  }
+
+  if (msg.type === "CANCEL") {
+    if (requestId) requestTabs.delete(requestId);
+    sendResponse({ ok: true });
   }
 });
 
-// Handle keyboard shortcut
+// Handle keyboard shortcut.
 chrome.commands.onCommand.addListener((command) => {
   if (command === "toggle-picker") {
     togglePicker();
   }
 });
 
-// Connect on startup
-connectNative();
 console.log("[pi-annotate] Background script loaded");

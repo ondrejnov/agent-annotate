@@ -2,11 +2,11 @@
   "manifest_version": 3,
   "name": "Pi Annotate",
   "version": "0.4.0",
-  "description": "Visual annotation tool for Pi coding agent",
+  "description": "Visual annotation tool that submits annotations to an HTTP endpoint",
   
   "permissions": [
     "activeTab",
-    "nativeMessaging",
+    "storage",
     "scripting"
   ],
   "host_permissions": [

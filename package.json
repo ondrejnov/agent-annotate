@@ -1,7 +1,7 @@
 {
   "name": "pi-annotate",
   "version": "0.4.3",
-  "description": "Visual annotation tool for Pi coding agent with inline note cards",
+  "description": "Visual annotation tool that submits browser annotations to an HTTP endpoint",
   "type": "module",
   "author": "Nico Bailon",
   "license": "MIT",
@@ -13,32 +13,19 @@
     "url": "https://github.com/nicobailon/pi-annotate/issues"
   },
   "homepage": "https://github.com/nicobailon/pi-annotate#readme",
-  "dependencies": {
-    "typebox": "^1.1.24"
-  },
   "keywords": [
-    "pi-package",
-    "pi",
-    "pi-coding-agent",
     "annotation",
     "visual-debugging",
     "chrome-extension",
-    "extension"
+    "extension",
+    "http-endpoint"
   ],
   "files": [
-    "index.ts",
-    "types.ts",
     "banner.png",
     "demo.mp4",
     "chrome-extension/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
-  ],
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ],
-    "video": "https://github.com/nicobailon/pi-annotate/raw/refs/heads/main/demo.mp4"
-  }
+  ]
 }

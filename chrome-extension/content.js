@@ -3026,21 +3026,36 @@
       }
     }
     
-    chrome.runtime.sendMessage({
-      type: "ANNOTATIONS_COMPLETE",
-      requestId,
-      result: {
-        success: true,
-        elements,
-        screenshot,
-        screenshots,
-        prompt: context,
-        url: window.location.href,
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-        editCapture,
-      },
-    });
-    
+    let delivery;
+    try {
+      delivery = await chrome.runtime.sendMessage({
+        type: "ANNOTATIONS_COMPLETE",
+        requestId,
+        result: {
+          success: true,
+          elements,
+          screenshot,
+          screenshots,
+          prompt: context,
+          url: window.location.href,
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          editCapture,
+        },
+      });
+    } catch (err) {
+      delivery = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    if (!delivery?.ok) {
+      console.error("[pi-annotate] Submit failed:", delivery?.error || "Unknown error");
+      if (markersContainer) markersContainer.style.display = "";
+      if (notesContainer) notesContainer.style.display = "";
+      if (connectorsEl) connectorsEl.style.display = "";
+      if (panelEl) panelEl.style.display = "";
+      alert(`Failed to submit annotations: ${delivery?.error || "Unknown error"}`);
+      return;
+    }
+
     deactivate();
   }
   

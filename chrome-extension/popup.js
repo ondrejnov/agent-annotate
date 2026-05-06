@@ -1,139 +1,108 @@
 // Pi Annotate - Popup Script
 
-const extId = chrome.runtime.id;
-const installCmd = `./install.sh ${extId}`;
+const DEFAULT_ENDPOINT = "http://localhost:3000/annotations";
 
-// Elements
-const extIdInput = document.getElementById('ext-id');
-const installCmdInput = document.getElementById('install-cmd');
-const statusDot = document.getElementById('status-dot');
-const statusText = document.getElementById('status-text');
-const setupSection = document.getElementById('setup-section');
-const readySection = document.getElementById('ready-section');
-const troubleSection = document.getElementById('trouble-section');
+const statusDot = document.getElementById("status-dot");
+const statusText = document.getElementById("status-text");
+const endpointInput = document.getElementById("endpoint-url");
+const saveBtn = document.getElementById("save-endpoint");
+const startBtn = document.getElementById("start-btn");
+const messageEl = document.getElementById("endpoint-message");
 
-// Populate fields
-extIdInput.value = extId;
-installCmdInput.value = installCmd;
-
-// Platform-aware displays
-const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-const shortcutEl = document.getElementById('shortcut-key');
+const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+const shortcutEl = document.getElementById("shortcut-key");
 if (shortcutEl) {
-  shortcutEl.textContent = isMac ? '⌘ Shift P' : 'Ctrl+Shift+P';
-}
-const quitTipEl = document.getElementById('quit-tip');
-if (quitTipEl) {
-  // Mac has ⌘Q, Windows/Linux don't have a universal quit shortcut
-  quitTipEl.textContent = isMac 
-    ? 'Fully quit the supported browser (⌘Q) and reopen' 
-    : 'Fully quit the supported browser (menu → Exit) and reopen';
+  shortcutEl.textContent = isMac ? "⌘ Shift P" : "Ctrl+Shift+P";
 }
 
-// Copy functionality
-function copyToClipboard(text, btn) {
-  navigator.clipboard.writeText(text).then(() => {
-    const original = btn.textContent;
-    btn.textContent = 'Copied!';
-    btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = original;
-      btn.classList.remove('copied');
-    }, 1500);
-  }).catch(() => {
-    // Fallback: select the input text
-    const input = btn.previousElementSibling;
-    if (input?.select) {
-      input.select();
-      btn.textContent = 'Select All';
-      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
-    }
-  });
-}
-
-document.getElementById('copy-id').addEventListener('click', (e) => {
-  copyToClipboard(extId, e.target);
-});
-
-document.getElementById('copy-cmd').addEventListener('click', (e) => {
-  copyToClipboard(installCmd, e.target);
-});
-
-// Start annotation button — routes through background script which handles injection
-document.getElementById('start-btn')?.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ type: "TOGGLE_PICKER" });
-  window.close();
-});
-
-// Retry button
-document.getElementById('retry-btn')?.addEventListener('click', () => {
-  checkConnection();
-});
-
-// Update UI based on connection state
-function setConnected() {
-  statusDot.className = 'status-dot connected';
-  statusText.textContent = 'Connected';
-  setupSection.style.display = 'none';
-  readySection.style.display = 'block';
-  troubleSection.style.display = 'none';
-}
-
-function setNotInstalled(detail) {
-  statusDot.className = 'status-dot';
-  statusText.textContent = detail || 'Not installed';
-  setupSection.style.display = 'block';
-  readySection.style.display = 'none';
-  troubleSection.style.display = 'none';
-}
-
-function setTrouble(error) {
-  statusDot.className = 'status-dot trouble';
-  statusText.textContent = 'Connection issue';
-  setupSection.style.display = 'block';
-  readySection.style.display = 'none';
-  troubleSection.style.display = 'block';
-  document.getElementById('trouble-detail').textContent = error || 'Unknown error';
-}
-
-function setChecking() {
-  statusDot.className = 'status-dot checking';
-  statusText.textContent = 'Checking...';
-  // Reset sections to initial state (setup visible, others hidden)
-  setupSection.style.display = 'block';
-  readySection.style.display = 'none';
-  troubleSection.style.display = 'none';
-}
-
-// Check connection through the background service worker.
-// Opening a second native port from the popup would spawn a second host process.
-async function checkConnection() {
-  setChecking();
+function validateEndpoint(value) {
+  const endpoint = String(value || "").trim();
+  if (!endpoint) return "Endpoint URL is required";
 
   try {
-    const result = await chrome.runtime.sendMessage({ type: 'CHECK_CONNECTION' });
-    const error = result?.error || '';
-
-    if (result?.connected) {
-      setConnected();
-      return;
+    const url = new URL(endpoint);
+    if (!["http:", "https:"].includes(url.protocol)) {
+      return "Use http:// or https://";
     }
+  } catch {
+    return "Enter a valid URL";
+  }
 
-    if (error.includes('not found')) {
-      setNotInstalled('Native host not found');
-      return;
-    }
+  return "";
+}
 
-    if (error.includes('forbidden')) {
-      setNotInstalled('Extension ID mismatch - reinstall native host');
-      return;
-    }
+function setMessage(text, kind = "") {
+  messageEl.textContent = text || "";
+  messageEl.className = kind ? `message ${kind}` : "message";
+}
 
-    setTrouble(error || 'Native host disconnected unexpectedly');
-  } catch (err) {
-    setTrouble(err instanceof Error ? err.message : String(err));
+function setConfigured(endpointUrl) {
+  statusDot.className = "status-dot connected";
+  statusText.textContent = "Endpoint configured";
+  startBtn.disabled = false;
+  setMessage(`Annotations will be POSTed to ${endpointUrl}`, "success");
+}
+
+function setInvalid(error) {
+  statusDot.className = "status-dot";
+  statusText.textContent = "Endpoint missing";
+  startBtn.disabled = true;
+  setMessage(error, "error");
+}
+
+async function loadEndpoint() {
+  const stored = await chrome.storage.local.get({ annotationEndpoint: DEFAULT_ENDPOINT });
+  endpointInput.value = stored.annotationEndpoint || DEFAULT_ENDPOINT;
+  const error = validateEndpoint(endpointInput.value);
+  if (error) {
+    setInvalid(error);
+  } else {
+    setConfigured(endpointInput.value.trim());
   }
 }
 
-// Check on load
-checkConnection();
+async function saveEndpoint() {
+  const endpoint = endpointInput.value.trim();
+  const error = validateEndpoint(endpoint);
+  if (error) {
+    setInvalid(error);
+    endpointInput.focus();
+    return;
+  }
+
+  await chrome.storage.local.set({ annotationEndpoint: endpoint });
+  setConfigured(endpoint);
+}
+
+saveBtn.addEventListener("click", saveEndpoint);
+
+endpointInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") saveEndpoint();
+});
+
+endpointInput.addEventListener("input", () => {
+  const error = validateEndpoint(endpointInput.value);
+  if (error) {
+    setInvalid(error);
+  } else {
+    statusDot.className = "status-dot checking";
+    statusText.textContent = "Unsaved endpoint";
+    startBtn.disabled = true;
+    setMessage("Save endpoint before starting annotation.", "warning");
+  }
+});
+
+startBtn.addEventListener("click", async () => {
+  const error = validateEndpoint(endpointInput.value);
+  if (error) {
+    setInvalid(error);
+    return;
+  }
+
+  await chrome.runtime.sendMessage({ type: "TOGGLE_PICKER" });
+  window.close();
+});
+
+loadEndpoint().catch((err) => {
+  setInvalid(err instanceof Error ? err.message : String(err));
+});
