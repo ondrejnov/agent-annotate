@@ -1,7 +1,3 @@
-<p>
-  <img src="banner.png" alt="Agent Annotation" width="1100">
-</p>
-
 # Agent Annotation
 
 **Visual page annotations sent to your HTTP endpoint.**
