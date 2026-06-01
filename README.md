@@ -110,6 +110,7 @@ The extension sends a `POST` request with `Content-Type: application/json` when 
     ],
     "prompt": "",
     "url": "http://10.0.0.205:5173/task/019dfc0f-89d8-7fc6-9392-8f97dbdb3d38",
+    "title": "Task 019dfc0f-b167-766e-9103-6603ee6171fc6",
     "viewport": {
       "width": 1920,
       "height": 945
