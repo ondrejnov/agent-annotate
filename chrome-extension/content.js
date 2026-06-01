@@ -103,7 +103,8 @@
   let elementComments = new Map(); // index → comment string
   let openNotes = new Set();       // indices of currently open notes
   let notePositions = new Map();   // index → {x, y} manual position overrides
-  let dragState = null;            // { card, startX, startY, startLeft, startTop }
+  let dragState = null;            // note card or bottom panel drag state
+  let panelTopOffset = null;       // manual panel top position after dragging
   
   // Debug mode state (v0.3.0)
   let debugMode = false;
@@ -449,7 +450,11 @@
       margin-bottom: 8px;
       padding-bottom: 8px;
       border-bottom: 1px solid var(--agent-bg-elevated);
+      cursor: grab;
+      user-select: none;
     }
+
+    #agent-panel.dragging .agent-header { cursor: grabbing; }
     
     .agent-logo { 
       font-size: 15px; 
@@ -758,6 +763,7 @@
     openNotes = new Set();
     notePositions = new Map();
     dragState = null;
+    panelTopOffset = null;
     multiSelectMode = true;
     screenshotMode = "each";
     debugMode = false;
@@ -780,6 +786,10 @@
     if (connectorsEl) connectorsEl.innerHTML = "";
     hideHighlight();
     hideTooltip();
+    if (panelEl) {
+      panelEl.style.top = "";
+      panelEl.style.bottom = "0";
+    }
     
     // Reset mode toggle buttons
     const singleBtn = document.getElementById("agent-mode-single");
@@ -854,6 +864,7 @@
     openNotes = new Set();
     notePositions = new Map();
     dragState = null;
+    panelTopOffset = null;
     requestId = null;
     multiSelectMode = true;
     screenshotMode = "each";
@@ -957,6 +968,7 @@
     document.getElementById("agent-close").addEventListener("click", handleCancel);
     document.getElementById("agent-cancel").addEventListener("click", handleCancel);
     document.getElementById("agent-submit").addEventListener("click", handleSubmit);
+    setupPanelDrag();
     
     // Mode toggle
     document.getElementById("agent-mode-single").addEventListener("click", () => setMultiMode(false));
@@ -1234,6 +1246,18 @@
   
   function handleDragMove(e) {
     if (!dragState) return;
+
+    if (dragState.type === "panel") {
+      const { panel, startY, startTop } = dragState;
+      const maxTop = Math.max(0, window.innerHeight - panel.offsetHeight);
+      const newTop = Math.max(0, Math.min(startTop + e.clientY - startY, maxTop));
+
+      panel.style.top = `${newTop}px`;
+      panel.style.bottom = "auto";
+      panelTopOffset = newTop;
+      return;
+    }
+
     const { card, startX, startY, startLeft, startTop } = dragState;
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
@@ -1248,9 +1272,28 @@
   
   function handleDragEnd() {
     if (dragState) {
-      dragState.card.classList.remove("dragging");
+      (dragState.card || dragState.panel)?.classList.remove("dragging");
       dragState = null;
     }
+  }
+
+  function setupPanelDrag() {
+    const header = panelEl.querySelector(".agent-header");
+
+    header.addEventListener("mousedown", (e) => {
+      if (e.target.tagName === "BUTTON" || e.target.tagName === "INPUT") return;
+
+      const rect = panelEl.getBoundingClientRect();
+      dragState = {
+        type: "panel",
+        panel: panelEl,
+        startY: e.clientY,
+        startTop: rect.top
+      };
+      panelEl.classList.add("dragging");
+      e.preventDefault();
+      e.stopPropagation();
+    });
   }
   
   function setupDrag(card) {
@@ -1259,6 +1302,7 @@
     header.addEventListener("mousedown", (e) => {
       if (e.target.tagName === "BUTTON" || e.target.tagName === "SPAN") return;
       dragState = {
+        type: "note",
         card,
         startX: e.clientX,
         startY: e.clientY,
@@ -1567,7 +1611,7 @@
   // ─────────────────────────────────────────────────────────────────────
   
   function onMouseMove(e) {
-    if (!isActive || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) {
+    if (!isActive || dragState || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) {
       hideHighlight();
       hideTooltip();
       return;
@@ -1668,7 +1712,14 @@
   function handleResize() {
     updateBadges();
     const panelHeight = document.getElementById("agent-panel")?.offsetHeight || 96;
-    
+
+    if (panelEl && panelTopOffset !== null) {
+      const newTop = Math.max(0, Math.min(panelTopOffset, window.innerHeight - panelEl.offsetHeight));
+      panelEl.style.top = `${newTop}px`;
+      panelEl.style.bottom = "auto";
+      panelTopOffset = newTop;
+    }
+
     openNotes.forEach(index => {
       const card = notesContainer.querySelector(`[data-index="${index}"]`);
       if (!card) return;
