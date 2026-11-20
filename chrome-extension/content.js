@@ -29,6 +29,7 @@
   const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
   const ALT_KEY_LABEL = IS_MAC ? "⌥" : "Alt";
   const REACT_COMPONENT_MARKER_ATTR = "data-agent-react-component-marker";
+  const DEFAULT_MODEL_OPTION = "";
   
   // HTML escape to prevent XSS when inserting user-controlled content
   function escapeHtml(str) {
@@ -80,6 +81,48 @@
     reactEl.title = formatReactComponentTitle(sel.reactComponent);
     reactEl.style.display = label ? "" : "none";
   }
+
+  function normalizeModels(value) {
+    const rawModels = Array.isArray(value) ? value : String(value || "").split(/[\n,]/);
+    const seen = new Set();
+    return rawModels
+      .map(model => {
+        if (model && typeof model === "object") {
+          return {
+            id: String(model.id || "").trim(),
+            label: String(model.label || model.id || "").trim(),
+          };
+        }
+
+        const raw = String(model || "").trim();
+        const separator = raw.indexOf(":");
+        const id = separator >= 0 ? raw.slice(0, separator).trim() : raw;
+        const label = separator >= 0 ? raw.slice(separator + 1).trim() : raw;
+        return { id, label: label || id };
+      })
+      .filter(model => {
+        if (!model.id || seen.has(model.id)) return false;
+        seen.add(model.id);
+        return true;
+      });
+  }
+
+  async function loadModelOptions() {
+    const select = document.getElementById("agent-model-select");
+    if (!select) return;
+
+    try {
+      const stored = await chrome.storage.local.get({ annotationModels: [] });
+      configuredModels = normalizeModels(stored.annotationModels);
+    } catch (err) {
+      console.warn("[agent-annotation] Failed to load model settings:", err);
+      configuredModels = [];
+    }
+
+    select.innerHTML = `<option value="${DEFAULT_MODEL_OPTION}">Default model</option>` +
+      configuredModels.map(model => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.label)}</option>`).join("");
+    select.disabled = configuredModels.length === 0;
+  }
   
   // ─────────────────────────────────────────────────────────────────────
   // State
@@ -90,6 +133,7 @@
   let multiSelectMode = true;
   let screenshotMode = "each"; // "each" | "full" | "none"
   let reactMarkerSeq = 0;
+  let configuredModels = [];
   
   // Element picker state
   let elementStack = [];
@@ -635,7 +679,8 @@
       margin-bottom: 8px;
     }
     
-    .agent-context-row input {
+    .agent-context-row input,
+    .agent-submit-options select {
       width: 100%;
       background: var(--agent-bg-body);
       border: 1px solid var(--agent-border-muted);
@@ -646,7 +691,8 @@
       padding: 8px 12px;
     }
     
-    .agent-context-row input:focus {
+    .agent-context-row input:focus,
+    .agent-submit-options select:focus {
       outline: none;
       border-color: var(--agent-accent);
       box-shadow: 0 0 0 3px var(--agent-focus-ring);
@@ -656,9 +702,35 @@
     
     .agent-actions {
       display: flex;
+      align-items: center;
+      gap: 12px;
       justify-content: flex-end;
       padding-top: 8px;
       border-top: 1px solid var(--agent-bg-elevated);
+    }
+
+    .agent-submit-options {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: none;
+      min-width: 0;
+    }
+
+    .agent-worktree-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--agent-fg-muted);
+      font-size: 12px;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .agent-submit-options select {
+      max-width: 220px;
+      font-size: 12px;
+      padding: 6px 8px;
     }
     
     .agent-buttons { display: flex; gap: 8px; }
@@ -703,7 +775,8 @@
       activate();
     } else if (msg.type === "TOGGLE_PICKER") {
       if (isActive) {
-        deactivate();
+        // Close the same way as Escape, so a pending agent request gets cancelled too.
+        handleCancel();
       } else {
         activate();
       }
@@ -749,7 +822,21 @@
     initDragHandlers();
     
     document.body.style.cursor = "crosshair";
+    focusContextInput();
     console.log("[agent-annotation] Activated");
+  }
+
+  // Put the caret into the "General context" input so the user can type right away.
+  function focusContextInput() {
+    const focus = () => {
+      const el = document.getElementById("agent-context");
+      if (!el) return;
+      window.focus();
+      el.focus({ preventScroll: true });
+    };
+    focus();
+    // Clicking the toolbar icon may leave focus in the browser UI; retry once the page regains it.
+    setTimeout(focus, 50);
   }
   
   function resetState() {
@@ -812,7 +899,8 @@
     // Clear context input
     const contextEl = document.getElementById("agent-context");
     if (contextEl) contextEl.value = "";
-    
+    focusContextInput();
+
     // Reset debug mode checkbox
     const debugCheckbox = document.getElementById("agent-debug-mode");
     if (debugCheckbox) debugCheckbox.checked = false;
@@ -957,6 +1045,15 @@
         <input type="text" id="agent-context" placeholder="General context (optional)..." />
       </div>
       <div class="agent-actions">
+        <div class="agent-submit-options">
+          <label class="agent-worktree-toggle" title="Tell the API to use a worktree">
+            <input type="checkbox" id="agent-use-worktree" />
+            <span>Use worktree</span>
+          </label>
+          <select id="agent-model-select" title="Model to use">
+            <option value="${DEFAULT_MODEL_OPTION}">Default model</option>
+          </select>
+        </div>
         <div class="agent-buttons">
           <button class="agent-btn agent-btn-cancel" id="agent-cancel">Cancel</button>
           <button class="agent-btn agent-btn-submit" id="agent-submit">Submit</button>
@@ -968,6 +1065,20 @@
     document.getElementById("agent-close").addEventListener("click", handleCancel);
     document.getElementById("agent-cancel").addEventListener("click", handleCancel);
     document.getElementById("agent-submit").addEventListener("click", handleSubmit);
+    document.getElementById("agent-context").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleSubmit();
+      }
+    });
+    // Dictation tools paste the transcribed text — submit right away instead of waiting for Enter.
+    document.getElementById("agent-context").addEventListener("input", (e) => {
+      if (e.inputType === "insertFromPaste" && e.target.value.trim()) {
+        handleSubmit();
+      }
+    });
+    loadModelOptions();
     setupPanelDrag();
     
     // Mode toggle
@@ -3136,6 +3247,8 @@
   
   async function handleSubmit() {
     const context = document.getElementById("agent-context")?.value?.trim() || "";
+    const useWorktree = Boolean(document.getElementById("agent-use-worktree")?.checked);
+    const model = document.getElementById("agent-model-select")?.value?.trim() || null;
     
     // Re-capture debug data for all elements if debug mode is on at submit time
     // (handles elements selected before debug was enabled)
@@ -3253,6 +3366,8 @@
           screenshot,
           screenshots,
           prompt: context,
+          useWorktree,
+          model,
           url: window.location.href,
           title: document.title,
           viewport: { width: window.innerWidth, height: window.innerHeight },

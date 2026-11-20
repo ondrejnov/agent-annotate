@@ -211,6 +211,8 @@ async function postAnnotations(msg) {
     type: "annotations",
     timestamp: new Date().toISOString(),
     requestId: getRequestId(msg),
+    useWorktree: Boolean(msg.result?.useWorktree),
+    model: msg.result?.model || null,
     result: msg.result,
   };
   const requestBody = requestMode === "jsonrpc"
@@ -422,9 +424,9 @@ chrome.commands.onCommand.addListener((command) => {
   }
 });
 
-// Clicking the extension icon starts annotation immediately.
+// Clicking the extension icon toggles the annotation toolbar (open / close).
 chrome.action.onClicked.addListener(() => {
-  startAnnotation({ type: "START_ANNOTATION" });
+  togglePicker();
 });
 
 console.log("[agent-annotation] Background script loaded");

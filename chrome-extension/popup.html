@@ -60,6 +60,7 @@
       gap: 6px;
     }
     .field input,
+    textarea,
     select {
       flex: 1;
       min-width: 0;
@@ -73,7 +74,13 @@
       outline: none;
     }
     .field input:focus,
+    textarea:focus,
     select:focus { border-color: #6366f1; }
+    textarea {
+      min-height: 68px;
+      resize: vertical;
+      width: 100%;
+    }
     select { width: 100%; }
     .btn {
       background: #27272a;
@@ -175,6 +182,13 @@
     </div>
   </div>
 
+  <div class="section">
+    <div class="label">Models</div>
+    <div class="field">
+      <textarea id="models" placeholder="gpt-5.5:GPT 5.5&#10;claude-sonnet-4.5:Claude Sonnet 4.5"></textarea>
+    </div>
+  </div>
+
   <div class="ready-content">
     <p>Use the button below or keyboard shortcut.</p>
     <span class="shortcut" id="shortcut-key"></span>
@@ -182,7 +196,7 @@
   </div>
 
   <div class="footer">
-    On submit, the extension sends annotations using the selected request type.
+    On submit, the extension sends annotations using the selected request type, selected model, and worktree preference.
   </div>
 
   <script src="popup.js"></script>
