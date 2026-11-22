@@ -30,7 +30,22 @@
   const ALT_KEY_LABEL = IS_MAC ? "⌥" : "Alt";
   const REACT_COMPONENT_MARKER_ATTR = "data-agent-react-component-marker";
   const DEFAULT_MODEL_OPTION = "";
-  
+
+  // Area (drag) selection
+  const REGION_DRAG_THRESHOLD = 5;         // px of mouse travel before a press becomes an area drag
+  const REGION_MIN_SIZE = 4;               // smaller areas are discarded
+  const REGION_SAMPLE_STEP = 10;           // px between hit-test samples
+  const REGION_MAX_SAMPLES_PER_AXIS = 40;
+  const REGION_CONTAINED_THRESHOLD = 0.9;  // share of an element's box inside the area to count as "contained"
+  const REGION_MAX_ELEMENTS = 25;
+  const REGION_TEXT_MAX_LENGTH = 1000;
+  const REGION_MAX_TEXT_NODES = 3000;
+  const REGION_SEMANTIC_TAGS = new Set([
+    "a", "button", "input", "select", "textarea", "label", "summary",
+    "img", "svg", "picture", "video", "audio", "canvas", "iframe",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+  ]);
+
   // HTML escape to prevent XSS when inserting user-controlled content
   function escapeHtml(str) {
     if (str === null || str === undefined) return "";
@@ -53,13 +68,51 @@
     return clsStr.split(/\s+/).some(c => c.startsWith("agent-"));
   }
   
+  // True for agent UI elements and anything nested inside them
+  function isInAgentUI(el) {
+    for (let node = el; node && node !== document.body; node = node.parentElement) {
+      if (isAgentElement(node)) return true;
+    }
+    return false;
+  }
+
+  function isRegionSelection(sel) {
+    return sel?.kind === "region";
+  }
+
+  // Viewport rect of a selection. Areas are stored relative to their container,
+  // so they follow it when the page or an inner scroll container moves.
+  function getSelectionRect(sel) {
+    const base = sel.element.getBoundingClientRect();
+    if (!isRegionSelection(sel)) return base;
+
+    const { x, y, width, height } = sel.regionOffset;
+    const left = base.left + x;
+    const top = base.top + y;
+    return { left, top, x: left, y: top, width, height, right: left + width, bottom: top + height };
+  }
+
+  function getSelectionLabel(sel) {
+    const elementLabel = sel.id ? `#${sel.id}` : `${sel.tag}${sel.classes[0] ? "." + sel.classes[0] : ""}`;
+    if (!isRegionSelection(sel)) return elementLabel;
+    const { width, height } = sel.regionOffset;
+    return `Area ${Math.round(width)}×${Math.round(height)} in ${elementLabel}`;
+  }
+
+  function getRegionInfoText(sel) {
+    const count = sel.regionElements?.length || 0;
+    const parts = [`${count} element${count === 1 ? "" : "s"}`];
+    if (sel.regionText) parts.push(`“${sel.regionText.slice(0, 80)}”`);
+    return parts.join(" · ");
+  }
+
   // Update note card's displayed selector label
   function updateNoteCardLabel(index) {
     const sel = selectedElements[index];
     if (!sel) return;
     const card = notesContainer?.querySelector(`[data-index="${index}"]`);
     if (!card) return;
-    const label = sel.id ? `#${sel.id}` : `${sel.tag}${sel.classes[0] ? "." + sel.classes[0] : ""}`;
+    const label = getSelectionLabel(sel);
     const selectorEl = card.querySelector(".agent-note-selector");
     if (selectorEl) {
       selectorEl.textContent = label;
@@ -140,7 +193,11 @@
   let stackIndex = 0;
   let selectedElements = [];
   let elementScreenshots = new Map(); // index → boolean
-  
+
+  // Area selection state
+  let regionDraft = null;          // { startX, startY, active, el } while the mouse is pressed on the page
+  let suppressClickUntil = 0;      // event timestamp until which the click ending an area drag is swallowed
+
   // Note card state (v0.2.0)
   let notesContainer = null;
   let connectorsEl = null;
@@ -289,6 +346,19 @@
       background: var(--agent-accent-muted);
     }
     
+    .agent-marker-outline.agent-marker-region,
+    #agent-region-draft {
+      border-style: dashed;
+    }
+
+    #agent-region-draft {
+      position: fixed;
+      pointer-events: none;
+      z-index: ${Z_INDEX_HIGHLIGHT};
+      border: 2px dashed var(--agent-accent);
+      background: var(--agent-accent-muted);
+    }
+
     .agent-marker-badge {
       position: fixed;
       pointer-events: auto;
@@ -419,6 +489,15 @@
       white-space: nowrap;
     }
     
+    .agent-note-region-info {
+      margin-bottom: 8px;
+      color: var(--agent-fg-muted);
+      font: 11px/1.35 var(--agent-font-ui);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .agent-note-screenshot,
     .agent-note-close,
     .agent-note-expand,
@@ -813,7 +892,9 @@
     createPanel();
     
     // Add listeners
+    document.addEventListener("mousedown", onMouseDown, true);
     document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("mouseup", onMouseUp, true);
     document.addEventListener("click", onClick, true);
     document.addEventListener("wheel", onWheel, { passive: false, capture: true });
     document.addEventListener("keydown", onKeyDown, true);
@@ -842,6 +923,7 @@
   function resetState() {
     if (etchObserver) { etchObserver.disconnect(); etchObserver = null; }
 
+    cancelRegionDraft();
     elementStack = [];
     stackIndex = 0;
     selectedElements = [];
@@ -921,8 +1003,11 @@
     if (!isActive) return;
     isActive = false;
     
+    document.removeEventListener("mousedown", onMouseDown, true);
     document.removeEventListener("mousemove", onMouseMove, true);
+    document.removeEventListener("mouseup", onMouseUp, true);
     document.removeEventListener("click", onClick, true);
+    cancelRegionDraft();
     document.removeEventListener("wheel", onWheel, { capture: true });
     document.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("scroll", handleScroll, true);
@@ -1011,7 +1096,7 @@
     panelEl.innerHTML = `
       <div class="agent-header">
         <span class="agent-logo">Agent Annotation</span>
-        <span class="agent-hint">Click elements • ${ALT_KEY_LABEL}+scroll cycles parents • ESC to close</span>
+        <span class="agent-hint">Click elements • Drag to select an area • ${ALT_KEY_LABEL}+scroll cycles parents • ESC to close</span>
         <button class="agent-close" id="agent-close" title="Close (ESC)">×</button>
       </div>
       <div class="agent-toolbar">
@@ -1152,8 +1237,7 @@
   // Note Card Functions
   // ─────────────────────────────────────────────────────────────────────
   
-  function calculateNotePosition(element, cardWidth = 280, cardHeight = 150) {
-    const rect = element.getBoundingClientRect();
+  function calculateNotePosition(rect, cardWidth = 280, cardHeight = 150) {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const panelHeight = document.getElementById("agent-panel")?.offsetHeight || 96;
@@ -1241,7 +1325,7 @@
     if (notePositions.has(index)) {
       adjustedPos = notePositions.get(index);
     } else {
-      const position = calculateNotePosition(sel.element);
+      const position = calculateNotePosition(getSelectionRect(sel));
       adjustedPos = adjustForCollisions(
         position,
         { width: 280, height: 150 },
@@ -1249,7 +1333,8 @@
       );
     }
     
-    const label = sel.id ? `#${sel.id}` : `${sel.tag}${sel.classes[0] ? "." + sel.classes[0] : ""}`;
+    const isRegion = isRegionSelection(sel);
+    const label = getSelectionLabel(sel);
     const reactLabel = formatReactComponentLabel(sel.reactComponent);
     const reactTitle = formatReactComponentTitle(sel.reactComponent);
     const hasScreenshot = elementScreenshots.get(index) !== false;
@@ -1265,14 +1350,15 @@
       <div class="agent-note-header">
         <span class="agent-note-badge">${index + 1}</span>
         <span class="agent-note-selector" title="${escapeHtml(sel.selector)}">${escapeHtml(label)}</span>
-        <button class="agent-note-expand" title="Expand to parent">▲</button>
-        <button class="agent-note-contract" title="Contract to child">▼</button>
+        ${isRegion ? "" : `<button class="agent-note-expand" title="Expand to parent">▲</button>
+        <button class="agent-note-contract" title="Contract to child">▼</button>`}
         <button class="agent-note-screenshot ${hasScreenshot ? "active" : ""}" title="Toggle screenshot">📷</button>
-        <button class="agent-note-close" title="Remove element">×</button>
+        <button class="agent-note-close" title="${isRegion ? "Remove area" : "Remove element"}">×</button>
       </div>
       <div class="agent-note-body">
+        ${isRegion ? `<div class="agent-note-region-info" title="${escapeHtml(sel.regionText || "")}">${escapeHtml(getRegionInfoText(sel))}</div>` : ""}
         <div class="agent-note-react" title="${escapeHtml(reactTitle)}" style="${reactLabel ? "" : "display:none"}">${escapeHtml(reactLabel)}</div>
-        <textarea class="agent-note-textarea" placeholder="Describe changes for this element...">${escapeHtml(comment)}</textarea>
+        <textarea class="agent-note-textarea" placeholder="Describe changes for this ${isRegion ? "area" : "element"}...">${escapeHtml(comment)}</textarea>
       </div>
     `;
     
@@ -1297,17 +1383,13 @@
     const closeBtn = card.querySelector(".agent-note-close");
     closeBtn.addEventListener("click", () => removeElement(getIndex()));
     
-    const expandBtn = card.querySelector(".agent-note-expand");
-    expandBtn.addEventListener("click", () => expandElement(getIndex()));
-    
-    const contractBtn = card.querySelector(".agent-note-contract");
-    contractBtn.addEventListener("click", () => contractElement(getIndex()));
-    
+    card.querySelector(".agent-note-expand")?.addEventListener("click", () => expandElement(getIndex()));
+    card.querySelector(".agent-note-contract")?.addEventListener("click", () => contractElement(getIndex()));
+
     const selectorEl = card.querySelector(".agent-note-selector");
     selectorEl.addEventListener("click", () => {
-      const idx = getIndex();
-      const currentSel = selectedElements[idx];
-      if (currentSel?.element) scrollToElement(currentSel.element);
+      const currentSel = selectedElements[getIndex()];
+      if (currentSel?.element) scrollToSelection(currentSel);
     });
     
     // Drag to reposition
@@ -1522,20 +1604,30 @@
     }
   }
   
-  function scrollToElement(element) {
+  function scrollToSelection(sel) {
+    const element = sel?.element;
     if (!element || !document.contains(element)) return;
-    
-    element.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-      inline: "center"
-    });
-    
+
+    if (isRegionSelection(sel)) {
+      const rect = getSelectionRect(sel);
+      window.scrollBy({
+        left: rect.left + rect.width / 2 - window.innerWidth / 2,
+        top: rect.top + rect.height / 2 - window.innerHeight / 2,
+        behavior: "smooth",
+      });
+    } else {
+      element.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+        inline: "center"
+      });
+    }
+
     // Flash highlight effect after scroll
     setTimeout(() => {
-      if (!element || !document.contains(element)) return;
-      
-      const rect = element.getBoundingClientRect();
+      if (!element || !document.contains(element) || !highlightEl) return;
+
+      const rect = getSelectionRect(sel);
       highlightEl.style.display = "";
       highlightEl.style.left = rect.left + "px";
       highlightEl.style.top = rect.top + "px";
@@ -1586,11 +1678,11 @@
     selectedElements.forEach((sel, i) => {
       if (!sel.element || !document.contains(sel.element)) return;
       
-      const rect = sel.element.getBoundingClientRect();
-      
-      // Create outline box around selected element
+      const rect = getSelectionRect(sel);
+
+      // Create outline box around selected element / area
       const outline = document.createElement("div");
-      outline.className = "agent-marker-outline";
+      outline.className = isRegionSelection(sel) ? "agent-marker-outline agent-marker-region" : "agent-marker-outline";
       outline.style.left = `${rect.left}px`;
       outline.style.top = `${rect.top}px`;
       outline.style.width = `${rect.width}px`;
@@ -1628,7 +1720,7 @@
       const card = notesContainer.querySelector(`[data-index="${i}"]`);
       if (!card || !sel.element || !document.contains(sel.element)) return;
       
-      const elemRect = sel.element.getBoundingClientRect();
+      const elemRect = getSelectionRect(sel);
       const cardRect = card.getBoundingClientRect();
       
       const elemCenter = {
@@ -1721,7 +1813,100 @@
   // Event Handlers
   // ─────────────────────────────────────────────────────────────────────
   
+  function isScrollbarPress(e) {
+    const root = document.documentElement;
+    if (e.clientX >= root.clientWidth || e.clientY >= root.clientHeight) return true;
+
+    const target = e.target;
+    if (!(target instanceof Element) || !target.clientWidth || !target.clientHeight) return false;
+    const scrollsX = target.scrollWidth > target.clientWidth;
+    const scrollsY = target.scrollHeight > target.clientHeight;
+    return (scrollsY && e.offsetX >= target.clientWidth) || (scrollsX && e.offsetY >= target.clientHeight);
+  }
+
+  function onMouseDown(e) {
+    if (!isActive || e.button !== 0 || dragState) return;
+    // A new press means the click that ended a previous area drag is gone.
+    suppressClickUntil = 0;
+    if (isInAgentUI(e.target) || isScrollbarPress(e)) return;
+
+    // Stop text selection and native dragging of links/images, so the press can become an area drag.
+    e.preventDefault();
+    cancelRegionDraft();
+    regionDraft = { startX: e.clientX, startY: e.clientY, active: false, el: null };
+  }
+
+  function getDraftRect(draft, x, y) {
+    const left = Math.max(0, Math.min(draft.startX, x));
+    const top = Math.max(0, Math.min(draft.startY, y));
+    const right = Math.min(window.innerWidth, Math.max(draft.startX, x));
+    const bottom = Math.min(window.innerHeight, Math.max(draft.startY, y));
+    return { left, top, right, bottom, x: left, y: top, width: right - left, height: bottom - top };
+  }
+
+  function updateRegionDraft(e) {
+    // Button released outside the window - we never got the mouseup.
+    if (!(e.buttons & 1)) {
+      cancelRegionDraft();
+      return;
+    }
+
+    const draft = regionDraft;
+    if (!draft.active) {
+      if (Math.hypot(e.clientX - draft.startX, e.clientY - draft.startY) < REGION_DRAG_THRESHOLD) return;
+      draft.active = true;
+      draft.el = document.createElement("div");
+      draft.el.id = "agent-region-draft";
+      document.body.appendChild(draft.el);
+      hideHighlight();
+    }
+
+    const rect = getDraftRect(draft, e.clientX, e.clientY);
+    Object.assign(draft.el.style, {
+      left: rect.left + "px",
+      top: rect.top + "px",
+      width: rect.width + "px",
+      height: rect.height + "px",
+    });
+
+    tooltipEl.innerHTML = `<span class="size">${Math.round(rect.width)}×${Math.round(rect.height)}</span>`;
+    tooltipEl.style.display = "";
+    tooltipEl.style.left = Math.min(e.clientX + 15, window.innerWidth - 90) + "px";
+    tooltipEl.style.top = Math.min(e.clientY + 15, window.innerHeight - 30) + "px";
+  }
+
+  function cancelRegionDraft() {
+    regionDraft?.el?.remove();
+    regionDraft = null;
+  }
+
+  function onMouseUp(e) {
+    if (!isActive || !regionDraft || e.button !== 0) return;
+
+    const draft = regionDraft;
+    const rect = getDraftRect(draft, e.clientX, e.clientY);
+    cancelRegionDraft();
+    if (!draft.active) return; // plain click - handled by onClick
+
+    // The click that follows this mouseup must not select an element.
+    suppressClickUntil = e.timeStamp + 500;
+    e.preventDefault();
+    e.stopPropagation();
+    hideTooltip();
+
+    if (rect.width < REGION_MIN_SIZE || rect.height < REGION_MIN_SIZE) return;
+    addRegion(rect, e.shiftKey);
+  }
+
   function onMouseMove(e) {
+    if (isActive && regionDraft) {
+      updateRegionDraft(e);
+      if (regionDraft?.active) {
+        e.stopPropagation();
+        return;
+      }
+    }
+
     if (!isActive || dragState || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) {
       hideHighlight();
       hideTooltip();
@@ -1772,31 +1957,28 @@
   
   function onClick(e) {
     if (!isActive || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) return;
-    
+
     e.preventDefault();
     e.stopPropagation();
-    
+
+    if (e.timeStamp < suppressClickUntil) {
+      suppressClickUntil = 0;
+      return;
+    }
+
     const el = elementStack[stackIndex];
     if (!el) return;
-    
-    const idx = selectedElements.findIndex(s => s.element === el);
-    
+
+    const idx = selectedElements.findIndex(s => s.element === el && !isRegionSelection(s));
+
     if (idx >= 0) {
       // Already selected - deselect it
       removeElement(idx);
       return;
     }
-    
+
     // Not selected - add it
-    const addToExisting = multiSelectMode || e.shiftKey;
-    if (!addToExisting) {
-      // Clear existing selections
-      collapseAllNotes();
-      selectedElements = [];
-      elementScreenshots = new Map();
-      elementComments = new Map();
-      notePositions = new Map();
-    }
+    if (!(multiSelectMode || e.shiftKey)) clearSelections();
     selectElement(el);
     
     // Auto-open note for the newly selected element
@@ -1866,10 +2048,274 @@
   // Selection
   // ─────────────────────────────────────────────────────────────────────
   
+  function clearSelections() {
+    collapseAllNotes();
+    selectedElements = [];
+    elementScreenshots = new Map();
+    elementComments = new Map();
+    notePositions = new Map();
+  }
+
   function selectElement(el) {
     const selection = createSelectionData(el);
     selectedElements.push(selection);
     enrichSelectionReactComponent(selection);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Area Selection
+  // ─────────────────────────────────────────────────────────────────────
+
+  function addRegion(rect, additive) {
+    const analysis = analyzeRegion(rect);
+    if (!(multiSelectMode || additive)) clearSelections();
+
+    const container = analysis.container;
+    const containerRect = container.getBoundingClientRect();
+    const selection = {
+      kind: "region",
+      element: container,
+      selector: generateSelector(container),
+      tag: container.tagName.toLowerCase(),
+      id: container.id || null,
+      classes: Array.from(container.classList),
+      regionOffset: {
+        x: rect.left - containerRect.left,
+        y: rect.top - containerRect.top,
+        width: rect.width,
+        height: rect.height,
+      },
+      regionElements: analysis.elements,
+      regionElementRefs: analysis.elementRefs,
+      regionText: analysis.text,
+    };
+
+    selectedElements.push(selection);
+    enrichSelectionReactComponent(selection);
+    enrichRegionElementsReactComponents(selection);
+
+    createNoteCard(selectedElements.length - 1);
+    updateBadges();
+    updateConnectors();
+  }
+
+  function rectArea(r) {
+    return Math.max(0, r.width) * Math.max(0, r.height);
+  }
+
+  function intersectionArea(a, b) {
+    const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+    const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+    return w > 0 && h > 0 ? w * h : 0;
+  }
+
+  function lowestCommonAncestor(nodes) {
+    let ancestor = null;
+    for (const node of nodes) {
+      if (!ancestor) {
+        ancestor = node;
+        continue;
+      }
+      while (ancestor && !ancestor.contains(node)) ancestor = ancestor.parentElement;
+    }
+    if (!ancestor || ancestor === document.documentElement) return document.body;
+    return ancestor;
+  }
+
+  // Hit-tests the page over a grid inside the area. Only what is actually painted on top
+  // is found, so elements hidden under overlays or outside the area are ignored.
+  function sampleRegionLeaves(rect) {
+    const cols = Math.min(REGION_MAX_SAMPLES_PER_AXIS, Math.max(2, Math.ceil(rect.width / REGION_SAMPLE_STEP)));
+    const rows = Math.min(REGION_MAX_SAMPLES_PER_AXIS, Math.max(2, Math.ceil(rect.height / REGION_SAMPLE_STEP)));
+    const leaves = new Set();
+
+    for (let row = 0; row < rows; row++) {
+      const y = rect.top + (row + 0.5) * rect.height / rows;
+      for (let col = 0; col < cols; col++) {
+        const x = rect.left + (col + 0.5) * rect.width / cols;
+        let el = document.elementFromPoint(x, y);
+        if (!el || isInAgentUI(el)) continue;
+        // Treat SVG internals (path, g, ...) as the <svg> element itself.
+        if (el instanceof SVGElement && el.ownerSVGElement) {
+          while (el.ownerSVGElement) el = el.ownerSVGElement;
+        }
+        leaves.add(el);
+      }
+    }
+    return leaves;
+  }
+
+  function isSemanticElement(el) {
+    return REGION_SEMANTIC_TAGS.has(el.tagName.toLowerCase()) ||
+      el.hasAttribute("role") ||
+      el.hasAttribute("contenteditable") ||
+      el.hasAttribute("tabindex");
+  }
+
+  function describeRegionElement(el, relation, coverage) {
+    const accessibility = getAccessibilityInfo(el);
+    const entry = {
+      relation,
+      selector: generateSelector(el),
+      tag: el.tagName.toLowerCase(),
+      id: el.id || null,
+      classes: Array.from(el.classList).slice(0, 8),
+      text: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 120),
+      rect: getRectData(el),
+      coverage: Math.round(coverage * 100) / 100,
+    };
+    if (accessibility.role) entry.role = accessibility.role;
+    if (accessibility.name) entry.name = accessibility.name;
+    return entry;
+  }
+
+  // Visible text inside the area. Text nodes cut by the area edge are narrowed down to whole words.
+  function getRegionText(container, rect) {
+    const centerInside = (r) => {
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      return cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom;
+    };
+
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return node.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        }
+        if (isAgentElement(node)) return NodeFilter.FILTER_REJECT;
+        const r = node.getBoundingClientRect();
+        // display:contents wrappers have no box - look inside them.
+        if (!r.width && !r.height) return NodeFilter.FILTER_SKIP;
+        return intersectionArea(r, rect) > 0 ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_REJECT;
+      },
+    });
+
+    const range = document.createRange();
+    const parts = [];
+    let length = 0;
+    let visited = 0;
+    let node;
+
+    while ((node = walker.nextNode()) && visited < REGION_MAX_TEXT_NODES && length < REGION_TEXT_MAX_LENGTH) {
+      visited++;
+      const parent = node.parentElement;
+      if (parent?.checkVisibility && !parent.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
+
+      range.selectNodeContents(node);
+      const rects = Array.from(range.getClientRects());
+      if (!rects.length || !rects.some(r => intersectionArea(r, rect) > 0)) continue;
+
+      let text;
+      if (rects.every(centerInside)) {
+        text = node.nodeValue;
+      } else {
+        const words = [];
+        const value = node.nodeValue.slice(0, 5000);
+        for (const match of value.matchAll(/\S+/g)) {
+          range.setStart(node, match.index);
+          range.setEnd(node, match.index + match[0].length);
+          if (centerInside(range.getBoundingClientRect())) words.push(match[0]);
+        }
+        text = words.join(" ");
+      }
+
+      text = text.trim().replace(/\s+/g, " ");
+      if (!text) continue;
+      parts.push(text);
+      length += text.length + 1;
+    }
+
+    return parts.join(" ").slice(0, REGION_TEXT_MAX_LENGTH);
+  }
+
+  function analyzeRegion(rect) {
+    // Hide our own UI so hit-testing sees only the page.
+    const ui = [highlightEl, tooltipEl, markersContainer, notesContainer, connectorsEl, panelEl].filter(Boolean);
+    const previousVisibility = ui.map(el => el.style.visibility);
+    ui.forEach(el => { el.style.visibility = "hidden"; });
+
+    let leaves;
+    try {
+      leaves = sampleRegionLeaves(rect);
+    } finally {
+      ui.forEach((el, i) => { el.style.visibility = previousVisibility[i]; });
+    }
+
+    const container = leaves.size ? lowestCommonAncestor(leaves) : document.body;
+
+    // Candidates: every element on the path from a hit leaf up to (not including) the container.
+    const candidates = new Set();
+    leaves.forEach(leaf => {
+      for (let el = leaf; el && el !== container && el !== document.body; el = el.parentElement) {
+        candidates.add(el);
+      }
+    });
+
+    const coverage = new Map();
+    candidates.forEach(el => {
+      const r = el.getBoundingClientRect();
+      const area = rectArea(r);
+      const inter = intersectionArea(r, rect);
+      if (area > 0 && inter > 0) coverage.set(el, inter / area);
+    });
+
+    const isContained = (el) => (coverage.get(el) || 0) >= REGION_CONTAINED_THRESHOLD;
+    const hasContainedAncestor = (el) => {
+      for (let p = el.parentElement; p && p !== container; p = p.parentElement) {
+        if (isContained(p)) return true;
+      }
+      return false;
+    };
+
+    const contained = [];  // outermost elements fully inside the area
+    const partial = [];    // direct children of the container that the area cuts through
+    const inside = [];     // interactive / semantic elements nested in contained ones
+    coverage.forEach((value, el) => {
+      if (isContained(el)) {
+        if (!hasContainedAncestor(el)) contained.push(el);
+        else if (isSemanticElement(el)) inside.push(el);
+      } else if (el.parentElement === container) {
+        partial.push(el);
+      }
+    });
+
+    const picked = [];
+    const pick = (list, relation) => {
+      for (const el of list) {
+        if (picked.length >= REGION_MAX_ELEMENTS) return;
+        picked.push({ el, relation });
+      }
+    };
+    pick(contained, "contained");
+    pick(partial, "partial");
+    pick(inside, "inside");
+
+    picked.sort((a, b) => (
+      a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    ));
+
+    return {
+      container,
+      elements: picked.map(({ el, relation }) => describeRegionElement(el, relation, coverage.get(el))),
+      elementRefs: picked.map(({ el }) => el),
+      text: getRegionText(container, rect),
+    };
+  }
+
+  async function enrichRegionElementsReactComponents(selection) {
+    const refs = selection.regionElementRefs || [];
+    if (!refs.length) return;
+
+    const results = await requestReactComponentInfo(refs);
+    results.forEach(({ index, reactComponent }) => {
+      const entry = selection.regionElements[index];
+      if (!entry || !reactComponent?.name) return;
+      entry.reactComponent = {
+        name: reactComponent.name,
+        source: reactComponent.source || null,
+        jsxSource: reactComponent.jsxSource || null,
+      };
+    });
   }
   
   function generateSelector(el) {
@@ -3120,18 +3566,16 @@
   // Screenshot Cropping
   // ─────────────────────────────────────────────────────────────────────
   
-  async function cropToElement(dataUrl, element) {
+  async function cropToRect(dataUrl, rect, padding = 0) {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
         const dpr = window.devicePixelRatio || 1;
-        
-        const rect = element.getBoundingClientRect();
-        
-        let minX = Math.max(0, rect.left - SCREENSHOT_PADDING);
-        let minY = Math.max(0, rect.top - SCREENSHOT_PADDING);
-        let maxX = Math.min(window.innerWidth, rect.right + SCREENSHOT_PADDING);
-        let maxY = Math.min(window.innerHeight, rect.bottom + SCREENSHOT_PADDING);
+
+        let minX = Math.max(0, rect.left - padding);
+        let minY = Math.max(0, rect.top - padding);
+        let maxX = Math.min(window.innerWidth, rect.right + padding);
+        let maxY = Math.min(window.innerHeight, rect.bottom + padding);
         
         const cropW = Math.max(1, (maxX - minX) * dpr);
         const cropH = Math.max(1, (maxY - minY) * dpr);
@@ -3195,9 +3639,19 @@
         elements.forEach((sel, i) => {
           const element = sel.element;
           if (!element || !document.contains(element)) return;
-          
-          const rect = element.getBoundingClientRect();
-          
+
+          const rect = getSelectionRect(sel);
+
+          // Areas have no element outline in the page, so draw their frame into the image.
+          if (isRegionSelection(sel)) {
+            ctx.save();
+            ctx.strokeStyle = bgColor;
+            ctx.lineWidth = 2 * dpr;
+            ctx.setLineDash([6 * dpr, 4 * dpr]);
+            ctx.strokeRect(rect.left * dpr, rect.top * dpr, rect.width * dpr, rect.height * dpr);
+            ctx.restore();
+          }
+
           // Badge center should be at element's top-right corner (matching DOM badge positioning)
           // DOM: badge.style.left = rect.right - 14, badge.style.top = rect.top - 14
           // This puts the 28px badge's CENTER at (rect.right, rect.top)
@@ -3245,6 +3699,30 @@
   // Submit / Cancel
   // ─────────────────────────────────────────────────────────────────────
   
+  function buildRegionPayload(sel, comment) {
+    const rect = getSelectionRect(sel);
+    return {
+      type: "region",
+      rect: {
+        x: Math.round(rect.left + window.scrollX),
+        y: Math.round(rect.top + window.scrollY),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+      comment,
+      text: sel.regionText,
+      container: {
+        selector: sel.selector,
+        tag: sel.tag,
+        id: sel.id,
+        classes: sel.classes,
+        rect: getRectData(sel.element),
+        reactComponent: sel.reactComponent || null,
+      },
+      elements: sel.regionElements,
+    };
+  }
+
   async function handleSubmit() {
     const context = document.getElementById("agent-context")?.value?.trim() || "";
     const useWorktree = Boolean(document.getElementById("agent-use-worktree")?.checked);
@@ -3255,7 +3733,7 @@
     pruneStaleSelections();
     if (debugMode) {
       selectedElements.forEach(sel => {
-        if (sel.element && document.contains(sel.element)) {
+        if (!isRegionSelection(sel) && sel.element && document.contains(sel.element)) {
           sel.computedStyles = getComputedStyles(sel.element);
           sel.parentContext = getParentContext(sel.element);
           sel.cssVariables = getCSSVariables(sel.element);
@@ -3266,10 +3744,14 @@
     await enrichReactComponentInfo();
 
     const elements = selectedElements.map((sel, i) => {
+      const comment = elementComments.get(i) || "";
+      if (isRegionSelection(sel)) return buildRegionPayload(sel, comment);
+
       const { element, ...rest } = sel;
       return {
+        type: "element",
         ...rest,
-        comment: elementComments.get(i) || ""
+        comment
       };
     });
     
@@ -3299,9 +3781,12 @@
           } else {
             for (let i = 0; i < selectedElements.length; i++) {
               const hasScreenshot = elementScreenshots.get(i) !== false;
-              const element = selectedElements[i].element;
+              const sel = selectedElements[i];
+              const element = sel.element;
               if (hasScreenshot && element && document.contains(element)) {
-                const cropped = await cropToElement(fullScreenshot, element);
+                // Areas are cropped exactly as drawn; elements get a bit of surrounding context.
+                const padding = isRegionSelection(sel) ? 0 : SCREENSHOT_PADDING;
+                const cropped = await cropToRect(fullScreenshot, getSelectionRect(sel), padding);
                 screenshots.push({ index: i + 1, dataUrl: cropped });
               }
             }

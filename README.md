@@ -120,6 +120,35 @@ The extension sends a `POST` request with `Content-Type: application/json` when 
 }
 ```
 
+Each item in `elements` has a `type`. Clicked elements are `"type": "element"` (shape above). Areas selected by dragging are `"type": "region"`:
+
+```json
+{
+  "type": "region",
+  "rect": { "x": 27, "y": 126, "width": 482, "height": 173 },
+  "comment": "make these cards the same height",
+  "text": "Basic Free forever for one user Start Pro team 490 Kč per month Buy now",
+  "container": {
+    "selector": "#pricing",
+    "tag": "section",
+    "id": "pricing",
+    "classes": ["pricing"],
+    "rect": { "x": 20, "y": 110, "width": 1160, "height": 210 },
+    "reactComponent": null
+  },
+  "elements": [
+    { "relation": "contained", "selector": "#c1", "tag": "div", "text": "Basic Free forever…", "rect": {}, "coverage": 1 },
+    { "relation": "inside", "selector": "#c1 > button", "tag": "button", "role": "button", "name": "Start", "rect": {}, "coverage": 1 },
+    { "relation": "partial", "selector": "#c3", "tag": "div", "rect": {}, "coverage": 0.4 }
+  ]
+}
+```
+
+- `container`: the smallest element that contains everything visible in the area.
+- `elements[].relation`: `contained` = outermost elements fully inside the area, `partial` = container children the area cuts through, `inside` = interactive/semantic elements nested in contained ones. Up to 25, in document order, with `reactComponent` when available.
+- `text`: visible text inside the area; text nodes cut by the edge are narrowed to whole words.
+- In Crop mode the area screenshot is cropped exactly to `rect`; in Full mode the area frame is drawn into the screenshot.
+
 If **JSON-RPC** is selected, the same annotation payload is sent in `params` using JSON-RPC 2.0. The method name is configurable and defaults to `annotations`.
 
 ```json
@@ -144,6 +173,7 @@ If the endpoint returns a non-2xx response or the request fails, the annotation 
 | Action | How |
 |--------|-----|
 | Select element | Click on page |
+| Select area | Drag on page (screenshot + detected elements and text) |
 | Cycle ancestors | Alt/Option+scroll while hovering |
 | Multi-select | Toggle "Multi" or Shift+click |
 | Add comment | Type in note card textarea |
