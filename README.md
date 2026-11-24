@@ -274,6 +274,10 @@ Browser Extension
 
 No build step. Edit files in `chrome-extension/` directly, then reload the unpacked extension at `chrome://extensions`.
 
+## Privacy
+
+The extension sends data only to the endpoint you configure and collects nothing itself. See [PRIVACY.md](PRIVACY.md).
+
 ## License
 
 MIT
