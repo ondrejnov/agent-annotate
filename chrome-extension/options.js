@@ -3,12 +3,21 @@
 const DEFAULT_ENDPOINT = "http://localhost:3000/annotations";
 const DEFAULT_REQUEST_MODE = "post";
 const DEFAULT_JSONRPC_METHOD = "annotations";
+const DEFAULT_SELECT_DRAG = "arrow";
+const DEFAULT_DRAW_COLOR = "#ff0000";
 
 const endpointInput = document.getElementById("endpoint-url");
 const requestModeInput = document.getElementById("request-mode");
 const jsonrpcMethodInput = document.getElementById("jsonrpc-method");
 const jsonrpcMethodSection = document.getElementById("jsonrpc-method-section");
 const modelsInput = document.getElementById("models");
+const selectDragInput = document.getElementById("select-drag");
+const drawColorInput = document.getElementById("draw-color");
+const drawColorResetBtn = document.getElementById("draw-color-reset");
+
+function normalizeColor(value) {
+  return /^#[0-9a-f]{6}$/i.test(String(value || "")) ? value.toLowerCase() : DEFAULT_DRAW_COLOR;
+}
 const saveBtn = document.getElementById("save-endpoint");
 const messageEl = document.getElementById("endpoint-message");
 
@@ -83,8 +92,12 @@ async function loadEndpoint() {
     annotationRequestMode: DEFAULT_REQUEST_MODE,
     annotationJsonrpcMethod: DEFAULT_JSONRPC_METHOD,
     annotationModels: [],
+    annotationSelectDrag: DEFAULT_SELECT_DRAG,
+    annotationDrawColor: DEFAULT_DRAW_COLOR,
   });
+  drawColorInput.value = normalizeColor(stored.annotationDrawColor);
   endpointInput.value = stored.annotationEndpoint || DEFAULT_ENDPOINT;
+  selectDragInput.value = stored.annotationSelectDrag === "region" ? "region" : "arrow";
   requestModeInput.value = stored.annotationRequestMode === "jsonrpc" ? "jsonrpc" : "post";
   jsonrpcMethodInput.value = stored.annotationJsonrpcMethod || DEFAULT_JSONRPC_METHOD;
   modelsInput.value = formatModels(stored.annotationModels);
@@ -110,8 +123,10 @@ async function saveEndpoint() {
     annotationRequestMode: requestMode,
     annotationJsonrpcMethod: jsonrpcMethod,
     annotationModels: models,
+    annotationSelectDrag: selectDragInput.value === "region" ? "region" : "arrow",
+    annotationDrawColor: normalizeColor(drawColorInput.value),
   });
-  setMessage(`Saved. Annotations will be POSTed to ${endpoint}`, "success");
+  setMessage(`Settings saved. Annotations will be POSTed to ${endpoint}`, "success");
 }
 
 saveBtn.addEventListener("click", saveEndpoint);
@@ -137,6 +152,19 @@ jsonrpcMethodInput.addEventListener("input", () => {
 
 modelsInput.addEventListener("input", () => {
   setMessage("Unsaved models", "");
+});
+
+selectDragInput.addEventListener("change", () => {
+  setMessage("Unsaved drag setting", "");
+});
+
+drawColorInput.addEventListener("input", () => {
+  setMessage("Unsaved color", "");
+});
+
+drawColorResetBtn.addEventListener("click", () => {
+  drawColorInput.value = DEFAULT_DRAW_COLOR;
+  setMessage("Unsaved color", "");
 });
 
 loadEndpoint().catch((err) => {

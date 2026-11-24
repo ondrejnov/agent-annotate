@@ -92,6 +92,18 @@
       transition: background 0.15s;
     }
     button:hover { background: #4f46e5; }
+    button.secondary {
+      background: #ffffff;
+      border-color: #cbd5e1;
+      color: #1f2937;
+    }
+    button.secondary:hover { background: #f1f5f9; }
+    input.color-input {
+      flex: 0 0 64px;
+      height: 38px;
+      padding: 3px;
+      cursor: pointer;
+    }
     .message {
       min-height: 18px;
       margin-top: 10px;
@@ -111,6 +123,17 @@
       line-height: 1.5;
     }
     .section { margin-top: 16px; }
+    .save-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 20px;
+    }
+    .save-row .message {
+      flex: 1;
+      min-width: 0;
+      margin-top: 0;
+    }
   </style>
 </head>
 <body>
@@ -127,9 +150,7 @@
     <div class="label">HTTP Endpoint</div>
     <div class="field">
       <input type="url" id="endpoint-url" placeholder="http://localhost:3000/annotations">
-      <button id="save-endpoint">Save</button>
     </div>
-    <div class="message" id="endpoint-message"></div>
 
     <div class="section">
       <div class="label">Request Type</div>
@@ -149,10 +170,33 @@
     </div>
 
     <div class="section">
+      <div class="label">Dragging in Select mode</div>
+      <div class="field">
+        <select id="select-drag">
+          <option value="arrow">Draws an arrow (default)</option>
+          <option value="region">Selects an area</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="label">Arrow &amp; Pen Color</div>
+      <div class="field">
+        <input type="color" id="draw-color" value="#ff0000" class="color-input">
+        <button type="button" id="draw-color-reset" class="secondary">Reset to red</button>
+      </div>
+    </div>
+
+    <div class="section">
       <div class="label">Models</div>
       <div class="field">
         <textarea id="models" placeholder="gpt-5.5:GPT 5.5&#10;claude-sonnet-4.5:Claude Sonnet 4.5"></textarea>
       </div>
+    </div>
+
+    <div class="save-row">
+      <div class="message" id="endpoint-message"></div>
+      <button id="save-endpoint">Save settings</button>
     </div>
 
     <div class="hint">

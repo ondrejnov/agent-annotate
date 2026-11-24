@@ -46,6 +46,25 @@
     "h1", "h2", "h3", "h4", "h5", "h6",
   ]);
 
+  // Drawing (arrows / freehand)
+  const DEFAULT_DRAW_COLOR = "#ff0000";     // arrow / pen color; configurable in the options
+  const DRAW_STROKE = 3;
+  const DRAW_ARROW_HEAD = 16;              // px length of the arrow head
+  const DRAW_MIN_LENGTH = 8;               // shorter arrows / strokes are discarded
+  const DRAW_PEN_MIN_STEP = 2;             // px between recorded pen points
+  const DRAW_PEN_MAX_POINTS = 200;         // pen points sent in the payload (downsampled)
+  const DRAW_NEAR_RADII = [6, 12, 20];     // px around an arrow end searched when nothing is right under it
+  const DRAW_MAX_COVERED_ELEMENTS = 10;
+  const DRAW_SCREENSHOT_PADDING = 40;      // crop context around a drawing
+  const DRAW_SCREENSHOT_MIN_SHARE = 0.5;   // drawing crops are at least half the viewport wide and tall
+  const DEFAULT_SELECT_DRAG = "arrow";      // what dragging does in the Select tool: "arrow" | "region"
+  const TOOL_HINTS = {
+    select: (drag) => `Click elements • Drag to ${drag === "region" ? "select an area" : "draw an arrow"} • ${IS_MAC ? "⌥" : "Alt"}+scroll cycles parents • ESC to close`,
+    region: () => "Drag to select an area • ESC back to Select",
+    arrow: () => "Drag to draw an arrow • Shift snaps to 45° • ESC back to Select",
+    pen: () => "Drag to draw freehand • ESC back to Select",
+  };
+
   // HTML escape to prevent XSS when inserting user-controlled content
   function escapeHtml(str) {
     if (str === null || str === undefined) return "";
@@ -80,9 +99,31 @@
     return sel?.kind === "region";
   }
 
-  // Viewport rect of a selection. Areas are stored relative to their container,
+  // Arrows and freehand strokes ("pen") drawn with the drawing tools.
+  function isDrawingSelection(sel) {
+    return sel?.kind === "arrow" || sel?.kind === "pen";
+  }
+
+  // A plain clicked element (not an area or a drawing).
+  function isElementSelection(sel) {
+    return !isRegionSelection(sel) && !isDrawingSelection(sel);
+  }
+
+  // Viewport points of a drawing. Points are stored relative to the anchor element,
+  // so the drawing follows it when the page or an inner scroll container moves.
+  function getDrawingPoints(sel) {
+    const base = sel.element.getBoundingClientRect();
+    return sel.drawPoints.map(p => ({ x: base.left + p.x, y: base.top + p.y }));
+  }
+
+  // Viewport rect of a selection. Areas and drawings are stored relative to their container,
   // so they follow it when the page or an inner scroll container moves.
   function getSelectionRect(sel) {
+    if (isDrawingSelection(sel)) {
+      const b = getPointsBounds(getDrawingPoints(sel));
+      return { ...b, x: b.left, y: b.top };
+    }
+
     const base = sel.element.getBoundingClientRect();
     if (!isRegionSelection(sel)) return base;
 
@@ -92,8 +133,29 @@
     return { left, top, x: left, y: top, width, height, right: left + width, bottom: top + height };
   }
 
+  // Where the numbered badge sits and the note connector points to.
+  // Drawings use their start (the arrow's tail), so the badge doesn't cover what an arrow points at.
+  function getSelectionBadgePoint(sel) {
+    if (isDrawingSelection(sel)) return getDrawingPoints(sel)[0];
+    const rect = getSelectionRect(sel);
+    return { x: rect.right, y: rect.top };
+  }
+
+  function getSelectionConnectorPoint(sel) {
+    if (isDrawingSelection(sel)) return getDrawingPoints(sel)[0];
+    const rect = getSelectionRect(sel);
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }
+
+  function formatElementLabel(info) {
+    if (!info) return "nothing";
+    return info.id ? `#${info.id}` : `${info.tag}${info.classes?.[0] ? "." + info.classes[0] : ""}`;
+  }
+
   function getSelectionLabel(sel) {
-    const elementLabel = sel.id ? `#${sel.id}` : `${sel.tag}${sel.classes[0] ? "." + sel.classes[0] : ""}`;
+    const elementLabel = formatElementLabel(sel);
+    if (sel.kind === "arrow") return `Arrow → ${formatElementLabel(sel.toElement)}`;
+    if (sel.kind === "pen") return `Drawing in ${formatElementLabel(sel.covered?.container || sel)}`;
     if (!isRegionSelection(sel)) return elementLabel;
     const { width, height } = sel.regionOffset;
     return `Area ${Math.round(width)}×${Math.round(height)} in ${elementLabel}`;
@@ -104,6 +166,18 @@
     const parts = [`${count} element${count === 1 ? "" : "s"}`];
     if (sel.regionText) parts.push(`“${sel.regionText.slice(0, 80)}”`);
     return parts.join(" · ");
+  }
+
+  function getSelectionInfoText(sel) {
+    if (isRegionSelection(sel)) return getRegionInfoText(sel);
+    if (sel.kind === "arrow") {
+      const target = sel.toElement?.text ? ` “${sel.toElement.text.slice(0, 60)}”` : "";
+      return `${formatElementLabel(sel.fromElement)} → ${formatElementLabel(sel.toElement)}${target}`;
+    }
+    if (sel.kind === "pen") {
+      return sel.covered?.text ? `“${sel.covered.text.slice(0, 80)}”` : "Freehand drawing";
+    }
+    return "";
   }
 
   // Update note card's displayed selector label
@@ -198,6 +272,12 @@
   let regionDraft = null;          // { startX, startY, active, el } while the mouse is pressed on the page
   let suppressClickUntil = 0;      // event timestamp until which the click ending an area drag is swallowed
 
+  // Drawing state (finished arrows / strokes are selections of kind "arrow" / "pen")
+  let activeTool = "select";       // "select" | "region" | "arrow" | "pen"
+  let selectDragAction = DEFAULT_SELECT_DRAG; // from settings
+  let drawDraft = null;            // { type, points: [{x, y}] in viewport coords } while the mouse is pressed
+  let drawingsEl = null;           // SVG overlay with all drawings
+
   // Note card state (v0.2.0)
   let notesContainer = null;
   let connectorsEl = null;
@@ -206,7 +286,13 @@
   let notePositions = new Map();   // index → {x, y} manual position overrides
   let dragState = null;            // note card or bottom panel drag state
   let panelTopOffset = null;       // manual panel top position after dragging
-  
+
+  // Page freeze state: while frozen, the page gets no input events (open menus stay open)
+  let pageFrozen = false;
+  let freezeStyleEl = null;        // <style> with :hover / :focus rules rewritten to pinned attributes
+  let frozenAnimations = [];       // page animations paused by the freeze
+  let freezeCountdown = null;      // { left, timer } while a delayed freeze is counting down
+
   // Debug mode state (v0.3.0)
   let debugMode = false;
   let cachedCSSVarNames = null;    // Cache for CSS variable discovery
@@ -407,6 +493,45 @@
     .agent-connector-dot {
       fill: var(--agent-accent);
     }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       Drawings
+       ═══════════════════════════════════════════════════════════════════ */
+    .agent-drawings {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      overflow: visible;
+      pointer-events: none;
+      z-index: ${Z_INDEX_CONNECTORS};
+    }
+
+    .agent-draw-halo,
+    .agent-draw-stroke {
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .agent-draw-halo {
+      stroke: #ffffff;
+      stroke-opacity: 0.85;
+      stroke-width: ${DRAW_STROKE + 4};
+    }
+
+    .agent-draw-stroke {
+      stroke: var(--agent-draw-color, ${DEFAULT_DRAW_COLOR});
+      stroke-width: ${DRAW_STROKE};
+    }
+
+    .agent-draw-head {
+      fill: var(--agent-draw-color, ${DEFAULT_DRAW_COLOR});
+      stroke: var(--agent-draw-color, ${DEFAULT_DRAW_COLOR});
+      stroke-width: 2;
+      stroke-linejoin: round;
+    }
+    .agent-draw-head.agent-draw-halo { fill: #ffffff; stroke-width: ${DRAW_STROKE + 4}; }
+
     
     /* ═══════════════════════════════════════════════════════════════════
        Note Cards
@@ -686,6 +811,38 @@
     
     .agent-notes-toggle:hover { color: var(--agent-fg); }
 
+    /* ── Freeze toggle: page frozen / live ── */
+    .agent-freeze-btn {
+      background: var(--agent-bg-elevated);
+      border: 1px solid var(--agent-border-muted);
+      border-radius: 16px;
+      padding: 3px 10px;
+      font: inherit;
+      font-size: 12px;
+      color: var(--agent-fg-muted);
+      cursor: pointer;
+      white-space: nowrap;
+      min-width: 76px;
+      transition: background 0.3s, border-color 0.3s, color 0.3s;
+    }
+
+    .agent-freeze-btn:hover {
+      border-color: var(--agent-fg-dim);
+      color: var(--agent-fg);
+    }
+
+    .agent-freeze-btn.frozen {
+      background: rgba(102, 170, 230, 0.15);
+      border-color: #66aae6;
+      color: #a8d0f0;
+    }
+
+    .agent-freeze-btn.counting {
+      background: rgba(230, 192, 102, 0.15);
+      border-color: #e6c066;
+      color: #f0d8a0;
+    }
+
     /* ── Etch toggle: recording mode pill ── */
     .agent-etch-toggle {
       background: var(--agent-bg-elevated);
@@ -877,7 +1034,20 @@
       return;
     }
     isActive = true;
-    
+
+    // Our handlers sit on window (capture) ahead of the freeze shield, which then keeps the events from the page.
+    // Freeze before building the UI: focusing our input would otherwise blur the page and close its open menus.
+    window.addEventListener("keydown", onFreezeHotkey, true);
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("mousemove", onMouseMove, true);
+    window.addEventListener("mouseup", onMouseUp, true);
+    window.addEventListener("click", onClick, true);
+    window.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    window.addEventListener("keydown", onKeyDown, true);
+    initDragHandlers();
+    FREEZE_BLOCKED_EVENTS.forEach(type => window.addEventListener(type, onFreezeShield, true));
+    setPageFrozen(true);
+
     // Inject styles
     styleEl = document.createElement("style");
     styleEl.id = "agent-styles";
@@ -891,17 +1061,9 @@
     createNotesContainer();
     createPanel();
     
-    // Add listeners
-    document.addEventListener("mousedown", onMouseDown, true);
-    document.addEventListener("mousemove", onMouseMove, true);
-    document.addEventListener("mouseup", onMouseUp, true);
-    document.addEventListener("click", onClick, true);
-    document.addEventListener("wheel", onWheel, { passive: false, capture: true });
-    document.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("scroll", handleScroll, true);
     window.addEventListener("resize", handleResize);
-    initDragHandlers();
-    
+
     document.body.style.cursor = "crosshair";
     focusContextInput();
     console.log("[agent-annotation] Activated");
@@ -924,6 +1086,10 @@
     if (etchObserver) { etchObserver.disconnect(); etchObserver = null; }
 
     cancelRegionDraft();
+    drawDraft = null;
+    setTool("select");
+    loadDrawSettings();
+    if (drawingsEl) drawingsEl.innerHTML = "";
     elementStack = [];
     stackIndex = 0;
     selectedElements = [];
@@ -1002,14 +1168,17 @@
   function deactivate() {
     if (!isActive) return;
     isActive = false;
-    
-    document.removeEventListener("mousedown", onMouseDown, true);
-    document.removeEventListener("mousemove", onMouseMove, true);
-    document.removeEventListener("mouseup", onMouseUp, true);
-    document.removeEventListener("click", onClick, true);
+
+    setPageFrozen(false);
+    window.removeEventListener("keydown", onFreezeHotkey, true);
+    FREEZE_BLOCKED_EVENTS.forEach(type => window.removeEventListener(type, onFreezeShield, true));
+    window.removeEventListener("mousedown", onMouseDown, true);
+    window.removeEventListener("mousemove", onMouseMove, true);
+    window.removeEventListener("mouseup", onMouseUp, true);
+    window.removeEventListener("click", onClick, true);
     cancelRegionDraft();
-    document.removeEventListener("wheel", onWheel, { capture: true });
-    document.removeEventListener("keydown", onKeyDown, true);
+    window.removeEventListener("wheel", onWheel, { capture: true });
+    window.removeEventListener("keydown", onKeyDown, true);
     window.removeEventListener("scroll", handleScroll, true);
     window.removeEventListener("resize", handleResize);
     cleanupDragHandlers();
@@ -1026,9 +1195,12 @@
     markersContainer?.remove();
     notesContainer?.remove();
     connectorsEl?.remove();
-    
+    drawingsEl?.remove();
+
     styleEl = highlightEl = tooltipEl = panelEl = markersContainer = null;
-    notesContainer = connectorsEl = null;
+    notesContainer = connectorsEl = drawingsEl = null;
+    drawDraft = null;
+    activeTool = "select";
     elementStack = [];
     stackIndex = 0;
     selectedElements = [];
@@ -1055,7 +1227,255 @@
     
     console.log("[agent-annotation] Deactivated");
   }
-  
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Page Freeze
+  // ─────────────────────────────────────────────────────────────────────
+  // While annotating, the page is frozen: it gets no clicks, focus changes, hover or key events,
+  // so its open dropdowns, menus and popovers don't see an "outside click", focus loss or mouseleave
+  // and stay open. :hover / :focus styles and running animations are pinned as they were.
+  // "Live" mode (F8 or the toolbar button) hands the page back to the user, e.g. to open a menu.
+
+  const FREEZE_HOTKEY = "F8";
+  const FREEZE_COUNTDOWN_SECONDS = 3;
+  const FREEZE_BLOCKED_EVENTS = [
+    "pointerdown", "pointerup", "pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave", "pointercancel",
+    "mousedown", "mouseup", "mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave",
+    "click", "dblclick", "auxclick", "contextmenu",
+    "touchstart", "touchmove", "touchend", "touchcancel",
+    "focus", "blur", "focusin", "focusout",
+    "keydown", "keyup", "keypress",
+  ];
+  // Events on the annotation UI that would look like "interaction outside" to the page's menus.
+  const FREEZE_UI_STOPPED_EVENTS = [
+    "pointerdown", "pointerup", "mousedown", "click", "dblclick", "auxclick", "contextmenu", "touchstart",
+    "focusin", "focusout", "keydown", "keyup", "keypress",
+  ];
+  const FREEZE_PSEUDOS = [
+    [":hover", "data-agent-freeze-hover"],
+    [":focus-within", "data-agent-freeze-focus-within"],
+    [":focus-visible", "data-agent-freeze-focus-visible"],
+    [":focus", "data-agent-freeze-focus"],
+  ].map(([pseudo, attr]) => ({ pseudo, attr, re: new RegExp(pseudo + "(?![\\w-])", "g") }));
+  const FREEZE_PSEUDO_TEST = /:(hover|focus|focus-within|focus-visible)(?![\w-])/;
+
+  // Window capture: runs before any page listener on document or below.
+  function onFreezeShield(e) {
+    if (!pageFrozen) return;
+    if (e.target instanceof Element && isInAgentUI(e.target)) return; // handled by stopAtAgentRoot
+    e.stopImmediatePropagation();
+  }
+
+  // Bubble phase on the annotation UI roots: page listeners on document/window never see these.
+  function stopAtAgentRoot(e) {
+    if (pageFrozen) e.stopPropagation();
+  }
+
+  function guardAgentRoot(el) {
+    FREEZE_UI_STOPPED_EVENTS.forEach(type => el.addEventListener(type, stopAtAgentRoot));
+  }
+
+  function onFreezeHotkey(e) {
+    if (e.key !== FREEZE_HOTKEY) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (!e.repeat) setPageFrozen(!pageFrozen);
+  }
+
+  function setPageFrozen(frozen) {
+    clearFreezeCountdown();
+    if (frozen !== pageFrozen) {
+      pageFrozen = frozen;
+      if (frozen) {
+        pinPseudoStates();
+        pauseAnimations();
+      } else {
+        unpinPseudoStates();
+        resumeAnimations();
+        cancelRegionDraft();
+        if (drawDraft) {
+          drawDraft = null;
+          renderDrawings();
+        }
+        hideHighlight();
+        hideTooltip();
+      }
+      console.log(`[agent-annotation] Page ${frozen ? "frozen" : "live"}`);
+    }
+    updateFreezeUI();
+  }
+
+  // Delayed freeze for the toolbar button: clicking it would itself close the page's menu,
+  // so the user gets a few seconds to open the menu (or hover) before the page freezes.
+  function startFreezeCountdown() {
+    clearFreezeCountdown();
+    freezeCountdown = { left: FREEZE_COUNTDOWN_SECONDS, timer: null };
+    const tick = () => {
+      if (freezeCountdown.left <= 0) {
+        setPageFrozen(true);
+        return;
+      }
+      updateFreezeUI();
+      freezeCountdown.left--;
+      freezeCountdown.timer = setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  function clearFreezeCountdown() {
+    if (freezeCountdown) clearTimeout(freezeCountdown.timer);
+    freezeCountdown = null;
+  }
+
+  function onFreezeButtonClick() {
+    if (freezeCountdown) {
+      clearFreezeCountdown();
+      updateFreezeUI();
+    } else if (pageFrozen) {
+      setPageFrozen(false);
+    } else {
+      startFreezeCountdown();
+    }
+  }
+
+  function updateFreezeUI() {
+    const btn = document.getElementById("agent-freeze");
+    if (btn) {
+      btn.classList.toggle("frozen", pageFrozen);
+      btn.classList.toggle("counting", !!freezeCountdown);
+      if (freezeCountdown) {
+        btn.textContent = `❄ in ${freezeCountdown.left}…`;
+        btn.title = "Freezing soon: open the menu or hover what you need now. Click to cancel.";
+      } else if (pageFrozen) {
+        btn.textContent = "❄ Frozen";
+        btn.title = `Page is frozen: it gets no clicks, focus, hover or keys, so open menus stay open. Click or press ${FREEZE_HOTKEY} to use the page.`;
+      } else {
+        btn.textContent = "▶ Live";
+        btn.title = `Page is live. Open a menu, then press ${FREEZE_HOTKEY} to freeze it (or click here: freezes in ${FREEZE_COUNTDOWN_SECONDS} s).`;
+      }
+    }
+    updateToolHint();
+  }
+
+  function splitSelectorList(selectorText) {
+    const parts = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < selectorText.length; i++) {
+      const ch = selectorText[i];
+      if (ch === "\\") i++;
+      else if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      else if (ch === "," && depth === 0) {
+        parts.push(selectorText.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    parts.push(selectorText.slice(start).trim());
+    return parts;
+  }
+
+  function replaceFrozenPseudos(text) {
+    return FREEZE_PSEUDOS.reduce((out, { re, attr }) => out.replace(re, `[${attr}]`), text);
+  }
+
+  function rewriteFrozenRule(rule) {
+    if (rule.cssRules?.length) {
+      // Native CSS nesting (e.g. Tailwind v4 `&:hover { … }`): copy the whole block.
+      return FREEZE_PSEUDO_TEST.test(rule.cssText) ? replaceFrozenPseudos(rule.cssText) : null;
+    }
+    if (!FREEZE_PSEUDO_TEST.test(rule.selectorText)) return null;
+    const selectors = splitSelectorList(rule.selectorText).filter(s => FREEZE_PSEUDO_TEST.test(s));
+    return `${selectors.map(replaceFrozenPseudos).join(", ")} { ${rule.style.cssText} }`;
+  }
+
+  function collectFrozenRules(rules, out) {
+    for (const rule of rules) {
+      if (rule instanceof CSSImportRule) {
+        try {
+          if (rule.styleSheet) collectFrozenRules(rule.styleSheet.cssRules, out);
+        } catch { /* cross-origin import */ }
+      } else if (rule instanceof CSSStyleRule) {
+        const text = rewriteFrozenRule(rule);
+        if (text) out.push(text);
+      } else if (rule.cssRules) {
+        // @media, @supports, @layer, @container…: keep the wrapper around the rewritten rules.
+        const inner = [];
+        collectFrozenRules(rule.cssRules, inner);
+        if (inner.length) {
+          const prelude = rule.cssText.slice(0, rule.cssText.indexOf("{")).trim();
+          out.push(`${prelude} {\n${inner.join("\n")}\n}`);
+        }
+      }
+    }
+  }
+
+  // Copies every :hover / :focus rule with the pseudo-class swapped for an attribute, and puts
+  // that attribute on the elements that match the pseudo-class now. Moving the mouse onto the
+  // annotation UI or focusing a note then doesn't change how the page looks.
+  function pinPseudoStates() {
+    const css = [];
+    const sheets = [...document.styleSheets, ...(document.adoptedStyleSheets || [])];
+    for (const sheet of sheets) {
+      if (sheet.ownerNode?.id?.startsWith?.("agent-")) continue;
+      let rules;
+      try {
+        rules = sheet.cssRules;
+      } catch {
+        continue; // cross-origin stylesheet
+      }
+      try {
+        collectFrozenRules(rules, css);
+      } catch (err) {
+        console.warn("[agent-annotation] Freeze: skipped a stylesheet:", err);
+      }
+    }
+
+    for (const { pseudo, attr } of FREEZE_PSEUDOS) {
+      document.querySelectorAll(pseudo).forEach(el => {
+        if (!isInAgentUI(el)) el.setAttribute(attr, "");
+      });
+    }
+
+    freezeStyleEl = document.createElement("style");
+    freezeStyleEl.id = "agent-freeze-styles";
+    // Insert rule by rule: one rule the browser rejects must not drop the rest.
+    (document.head || document.documentElement).appendChild(freezeStyleEl);
+    for (const text of css) {
+      try {
+        freezeStyleEl.sheet.insertRule(text, freezeStyleEl.sheet.cssRules.length);
+      } catch { /* unsupported rule */ }
+    }
+  }
+
+  function unpinPseudoStates() {
+    freezeStyleEl?.remove();
+    freezeStyleEl = null;
+    for (const { attr } of FREEZE_PSEUDOS) {
+      document.querySelectorAll(`[${attr}]`).forEach(el => el.removeAttribute(attr));
+    }
+  }
+
+  function pauseAnimations() {
+    try {
+      frozenAnimations = document.getAnimations().filter(a =>
+        a.playState === "running" && !isInAgentUI(a.effect?.target)
+      );
+      frozenAnimations.forEach(a => a.pause());
+    } catch {
+      frozenAnimations = [];
+    }
+  }
+
+  function resumeAnimations() {
+    frozenAnimations.forEach(a => {
+      try {
+        if (a.playState === "paused") a.play();
+      } catch { /* animation was removed */ }
+    });
+    frozenAnimations = [];
+  }
+
   // ─────────────────────────────────────────────────────────────────────
   // UI Creation
   // ─────────────────────────────────────────────────────────────────────
@@ -1078,12 +1498,18 @@
     markersContainer = document.createElement("div");
     markersContainer.id = "agent-markers";
     document.body.appendChild(markersContainer);
+    guardAgentRoot(markersContainer);
   }
   
   function createNotesContainer() {
+    drawingsEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    drawingsEl.setAttribute("class", "agent-drawings");
+    document.body.appendChild(drawingsEl);
+
     notesContainer = document.createElement("div");
     notesContainer.className = "agent-notes-container";
     document.body.appendChild(notesContainer);
+    guardAgentRoot(notesContainer);
     
     connectorsEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     connectorsEl.setAttribute("class", "agent-connectors");
@@ -1096,7 +1522,7 @@
     panelEl.innerHTML = `
       <div class="agent-header">
         <span class="agent-logo">Agent Annotation</span>
-        <span class="agent-hint">Click elements • Drag to select an area • ${ALT_KEY_LABEL}+scroll cycles parents • ESC to close</span>
+        <span class="agent-hint" id="agent-hint">${TOOL_HINTS.select(selectDragAction)}</span>
         <button class="agent-close" id="agent-close" title="Close (ESC)">×</button>
       </div>
       <div class="agent-toolbar">
@@ -1104,6 +1530,13 @@
           <button class="agent-mode-btn" id="agent-mode-single" title="Click replaces selection">Single</button>
           <button class="agent-mode-btn active" id="agent-mode-multi" title="Click adds to selection">Multi</button>
         </div>
+        <div class="agent-mode-toggle">
+          <button class="agent-mode-btn active" id="agent-tool-select" data-tool="select" title="Click selects elements; dragging does what the extension options say">Select</button>
+          <button class="agent-mode-btn" id="agent-tool-region" data-tool="region" title="Drag to select an area">▭ Area</button>
+          <button class="agent-mode-btn" id="agent-tool-arrow" data-tool="arrow" title="Draw arrows (Shift snaps to 45°)">↗ Arrow</button>
+          <button class="agent-mode-btn" id="agent-tool-pen" data-tool="pen" title="Draw freehand">✎ Pen</button>
+        </div>
+        <button class="agent-freeze-btn" id="agent-freeze"></button>
         <div class="agent-screenshot-toggle">
           <span class="agent-toggle-label">Screenshot</span>
           <button class="agent-ss-btn active" id="agent-ss-each" title="Crop screenshot to each element">Crop</button>
@@ -1146,7 +1579,10 @@
       </div>
     `;
     document.body.appendChild(panelEl);
-    
+    guardAgentRoot(panelEl);
+
+    document.getElementById("agent-freeze").addEventListener("click", onFreezeButtonClick);
+    updateFreezeUI();
     document.getElementById("agent-close").addEventListener("click", handleCancel);
     document.getElementById("agent-cancel").addEventListener("click", handleCancel);
     document.getElementById("agent-submit").addEventListener("click", handleSubmit);
@@ -1164,11 +1600,17 @@
       }
     });
     loadModelOptions();
+    loadDrawSettings();
     setupPanelDrag();
     
     // Mode toggle
     document.getElementById("agent-mode-single").addEventListener("click", () => setMultiMode(false));
     document.getElementById("agent-mode-multi").addEventListener("click", () => setMultiMode(true));
+
+    // Drawing tools
+    panelEl.querySelectorAll("[data-tool]").forEach(btn => {
+      btn.addEventListener("click", () => setTool(btn.dataset.tool));
+    });
     
     // Screenshot mode toggle
     document.getElementById("agent-ss-each").addEventListener("click", () => setScreenshotMode("each"));
@@ -1333,32 +1775,37 @@
       );
     }
     
-    const isRegion = isRegionSelection(sel);
+    const isElement = isElementSelection(sel);
+    const noun = sel.kind === "region" ? "area" : sel.kind === "arrow" ? "arrow" : sel.kind === "pen" ? "drawing" : "element";
+    const infoText = getSelectionInfoText(sel);
+    const infoTitle = sel.kind === "arrow" ? (sel.toElement?.text || "")
+      : sel.kind === "pen" ? (sel.covered?.text || "")
+      : (sel.regionText || "");
     const label = getSelectionLabel(sel);
     const reactLabel = formatReactComponentLabel(sel.reactComponent);
     const reactTitle = formatReactComponentTitle(sel.reactComponent);
     const hasScreenshot = elementScreenshots.get(index) !== false;
     const comment = elementComments.get(index) || "";
-    
+
     const card = document.createElement("div");
     card.className = "agent-note-card";
     card.dataset.index = index;
     card.style.left = `${adjustedPos.x}px`;
     card.style.top = `${adjustedPos.y}px`;
-    
+
     card.innerHTML = `
       <div class="agent-note-header">
         <span class="agent-note-badge">${index + 1}</span>
-        <span class="agent-note-selector" title="${escapeHtml(sel.selector)}">${escapeHtml(label)}</span>
-        ${isRegion ? "" : `<button class="agent-note-expand" title="Expand to parent">▲</button>
-        <button class="agent-note-contract" title="Contract to child">▼</button>`}
+        <span class="agent-note-selector" title="${escapeHtml(sel.toElement?.selector || sel.selector)}">${escapeHtml(label)}</span>
+        ${isElement ? `<button class="agent-note-expand" title="Expand to parent">▲</button>
+        <button class="agent-note-contract" title="Contract to child">▼</button>` : ""}
         <button class="agent-note-screenshot ${hasScreenshot ? "active" : ""}" title="Toggle screenshot">📷</button>
-        <button class="agent-note-close" title="${isRegion ? "Remove area" : "Remove element"}">×</button>
+        <button class="agent-note-close" title="Remove ${noun}">×</button>
       </div>
       <div class="agent-note-body">
-        ${isRegion ? `<div class="agent-note-region-info" title="${escapeHtml(sel.regionText || "")}">${escapeHtml(getRegionInfoText(sel))}</div>` : ""}
+        ${infoText ? `<div class="agent-note-region-info" title="${escapeHtml(infoTitle)}">${escapeHtml(infoText)}</div>` : ""}
         <div class="agent-note-react" title="${escapeHtml(reactTitle)}" style="${reactLabel ? "" : "display:none"}">${escapeHtml(reactLabel)}</div>
-        <textarea class="agent-note-textarea" placeholder="Describe changes for this ${isRegion ? "area" : "element"}...">${escapeHtml(comment)}</textarea>
+        <textarea class="agent-note-textarea" placeholder="Describe changes for this ${noun}...">${escapeHtml(comment)}</textarea>
       </div>
     `;
     
@@ -1427,14 +1874,15 @@
   // Drag Handling
   // ─────────────────────────────────────────────────────────────────────
   
+  // On window (capture), so the freeze shield and the UI's own stopPropagation can't swallow them.
   function initDragHandlers() {
-    document.addEventListener("mousemove", handleDragMove);
-    document.addEventListener("mouseup", handleDragEnd);
+    window.addEventListener("mousemove", handleDragMove, true);
+    window.addEventListener("mouseup", handleDragEnd, true);
   }
-  
+
   function cleanupDragHandlers() {
-    document.removeEventListener("mousemove", handleDragMove);
-    document.removeEventListener("mouseup", handleDragEnd);
+    window.removeEventListener("mousemove", handleDragMove, true);
+    window.removeEventListener("mouseup", handleDragEnd, true);
   }
   
   function handleDragMove(e) {
@@ -1608,7 +2056,7 @@
     const element = sel?.element;
     if (!element || !document.contains(element)) return;
 
-    if (isRegionSelection(sel)) {
+    if (!isElementSelection(sel)) {
       const rect = getSelectionRect(sel);
       window.scrollBy({
         left: rect.left + rect.width / 2 - window.innerWidth / 2,
@@ -1678,24 +2126,26 @@
     selectedElements.forEach((sel, i) => {
       if (!sel.element || !document.contains(sel.element)) return;
       
-      const rect = getSelectionRect(sel);
+      // Create outline box around selected element / area (drawings are their own marker)
+      if (!isDrawingSelection(sel)) {
+        const rect = getSelectionRect(sel);
+        const outline = document.createElement("div");
+        outline.className = isRegionSelection(sel) ? "agent-marker-outline agent-marker-region" : "agent-marker-outline";
+        outline.style.left = `${rect.left}px`;
+        outline.style.top = `${rect.top}px`;
+        outline.style.width = `${rect.width}px`;
+        outline.style.height = `${rect.height}px`;
+        markersContainer.appendChild(outline);
+      }
 
-      // Create outline box around selected element / area
-      const outline = document.createElement("div");
-      outline.className = isRegionSelection(sel) ? "agent-marker-outline agent-marker-region" : "agent-marker-outline";
-      outline.style.left = `${rect.left}px`;
-      outline.style.top = `${rect.top}px`;
-      outline.style.width = `${rect.width}px`;
-      outline.style.height = `${rect.height}px`;
-      markersContainer.appendChild(outline);
-      
       // Create numbered badge
+      const badgePoint = getSelectionBadgePoint(sel);
       const badge = document.createElement("div");
       badge.className = `agent-marker-badge ${openNotes.has(i) ? "open" : ""}`;
       badge.dataset.index = i;
       badge.textContent = i + 1;
-      badge.style.left = `${rect.right - 14}px`;
-      badge.style.top = `${rect.top - 14}px`;
+      badge.style.left = `${badgePoint.x - 14}px`;
+      badge.style.top = `${badgePoint.y - 14}px`;
       
       badge.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1705,7 +2155,9 @@
       markersContainer.appendChild(badge);
     });
     
-    // Update count
+    // Drawings are rendered from the selections, so keep them in sync with the markers.
+    renderDrawings();
+
     const countEl = document.getElementById("agent-count");
     if (countEl) countEl.textContent = `${selectedElements.length} selected`;
   }
@@ -1722,11 +2174,8 @@
       
       const elemRect = getSelectionRect(sel);
       const cardRect = card.getBoundingClientRect();
-      
-      const elemCenter = {
-        x: elemRect.left + elemRect.width / 2,
-        y: elemRect.top + elemRect.height / 2
-      };
+
+      const elemCenter = getSelectionConnectorPoint(sel);
       
       let cardAnchor;
       if (cardRect.left > elemRect.right) {
@@ -1824,8 +2273,9 @@
     return (scrollsY && e.offsetX >= target.clientWidth) || (scrollsX && e.offsetY >= target.clientHeight);
   }
 
+  // In "Live" mode (page not frozen) the page is the user's: the picker handlers stand aside.
   function onMouseDown(e) {
-    if (!isActive || e.button !== 0 || dragState) return;
+    if (!isActive || !pageFrozen || e.button !== 0 || dragState) return;
     // A new press means the click that ended a previous area drag is gone.
     suppressClickUntil = 0;
     if (isInAgentUI(e.target) || isScrollbarPress(e)) return;
@@ -1833,7 +2283,9 @@
     // Stop text selection and native dragging of links/images, so the press can become an area drag.
     e.preventDefault();
     cancelRegionDraft();
-    regionDraft = { startX: e.clientX, startY: e.clientY, active: false, el: null };
+    // The press becomes an area / arrow / stroke once it moves past the drag threshold;
+    // until then it may still be a plain click.
+    regionDraft = { startX: e.clientX, startY: e.clientY, active: false, el: null, action: getDragAction() };
   }
 
   function getDraftRect(draft, x, y) {
@@ -1854,6 +2306,12 @@
     const draft = regionDraft;
     if (!draft.active) {
       if (Math.hypot(e.clientX - draft.startX, e.clientY - draft.startY) < REGION_DRAG_THRESHOLD) return;
+      if (draft.action !== "region") {
+        // Hand the press over to the drawing code (onMouseMove / onMouseUp follow drawDraft).
+        regionDraft = null;
+        startDrawing(draft.action, { x: draft.startX, y: draft.startY }, { x: e.clientX, y: e.clientY });
+        return;
+      }
       draft.active = true;
       draft.el = document.createElement("div");
       draft.el.id = "agent-region-draft";
@@ -1881,7 +2339,12 @@
   }
 
   function onMouseUp(e) {
-    if (!isActive || !regionDraft || e.button !== 0) return;
+    if (!isActive || !pageFrozen || e.button !== 0) return;
+    if (drawDraft) {
+      finishDrawing(e);
+      return;
+    }
+    if (!regionDraft) return;
 
     const draft = regionDraft;
     const rect = getDraftRect(draft, e.clientX, e.clientY);
@@ -1899,20 +2362,27 @@
   }
 
   function onMouseMove(e) {
+    if (isActive && drawDraft) {
+      updateDrawing(e);
+      e.stopPropagation();
+      return;
+    }
+
     if (isActive && regionDraft) {
       updateRegionDraft(e);
-      if (regionDraft?.active) {
+      if (regionDraft?.active || drawDraft) {
         e.stopPropagation();
         return;
       }
     }
 
-    if (!isActive || dragState || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) {
+    if (!isActive || !pageFrozen || dragState || activeTool !== "select" ||
+        e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) {
       hideHighlight();
       hideTooltip();
       return;
     }
-    
+
     highlightEl.style.display = "none";
     tooltipEl.style.display = "none";
     const el = document.elementFromPoint(e.clientX, e.clientY);
@@ -1940,7 +2410,8 @@
   }
   
   function onWheel(e) {
-    if (!isActive || !elementStack.length || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) return;
+    if (!isActive || !pageFrozen || activeTool !== "select" || !elementStack.length ||
+        e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) return;
     
     if (!e.altKey) return;
     
@@ -1956,7 +2427,7 @@
   }
   
   function onClick(e) {
-    if (!isActive || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) return;
+    if (!isActive || !pageFrozen || e.target.closest("#agent-panel") || e.target.closest(".agent-note-card")) return;
 
     e.preventDefault();
     e.stopPropagation();
@@ -1965,11 +2436,12 @@
       suppressClickUntil = 0;
       return;
     }
+    if (activeTool !== "select") return;
 
     const el = elementStack[stackIndex];
     if (!el) return;
 
-    const idx = selectedElements.findIndex(s => s.element === el && !isRegionSelection(s));
+    const idx = selectedElements.findIndex(s => s.element === el && isElementSelection(s));
 
     if (idx >= 0) {
       // Already selected - deselect it
@@ -1990,13 +2462,24 @@
   }
   
   function onKeyDown(e) {
-    if (!isActive) return;
+    // Live: ESC belongs to the page (e.g. to close its menu).
+    if (!isActive || !pageFrozen) return;
     if (e.key === "Escape") {
       e.preventDefault();
-      handleCancel();
+      // handleCancel unfreezes the page mid-dispatch; the ESC itself must still not reach it.
+      e.stopPropagation();
+      // Leave a drawing tool first, so ESC doesn't close everything while drawing.
+      if (drawDraft) {
+        drawDraft = null;
+        renderDrawings();
+      } else if (activeTool !== "select") {
+        setTool("select");
+      } else {
+        handleCancel();
+      }
     }
   }
-  
+
   function handleScroll() {
     updateBadges();
     updateConnectors();
@@ -2152,21 +2635,27 @@
       el.hasAttribute("tabindex");
   }
 
-  function describeRegionElement(el, relation, coverage) {
+  function describeElementBrief(el) {
     const accessibility = getAccessibilityInfo(el);
     const entry = {
-      relation,
       selector: generateSelector(el),
       tag: el.tagName.toLowerCase(),
       id: el.id || null,
       classes: Array.from(el.classList).slice(0, 8),
       text: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 120),
       rect: getRectData(el),
-      coverage: Math.round(coverage * 100) / 100,
     };
     if (accessibility.role) entry.role = accessibility.role;
     if (accessibility.name) entry.name = accessibility.name;
     return entry;
+  }
+
+  function describeRegionElement(el, relation, coverage) {
+    return {
+      relation,
+      ...describeElementBrief(el),
+      coverage: Math.round(coverage * 100) / 100,
+    };
   }
 
   // Visible text inside the area. Text nodes cut by the area edge are narrowed down to whole words.
@@ -2228,18 +2717,20 @@
     return parts.join(" ").slice(0, REGION_TEXT_MAX_LENGTH);
   }
 
-  function analyzeRegion(rect) {
-    // Hide our own UI so hit-testing sees only the page.
-    const ui = [highlightEl, tooltipEl, markersContainer, notesContainer, connectorsEl, panelEl].filter(Boolean);
+  // Runs fn with our own UI hidden, so hit-testing sees only the page.
+  function withAgentUIHidden(fn) {
+    const ui = [highlightEl, tooltipEl, markersContainer, notesContainer, connectorsEl, drawingsEl, panelEl].filter(Boolean);
     const previousVisibility = ui.map(el => el.style.visibility);
     ui.forEach(el => { el.style.visibility = "hidden"; });
-
-    let leaves;
     try {
-      leaves = sampleRegionLeaves(rect);
+      return fn();
     } finally {
       ui.forEach((el, i) => { el.style.visibility = previousVisibility[i]; });
     }
+  }
+
+  function analyzeRegion(rect) {
+    const leaves = withAgentUIHidden(() => sampleRegionLeaves(rect));
 
     const container = leaves.size ? lowestCommonAncestor(leaves) : document.body;
 
@@ -2318,6 +2809,400 @@
     });
   }
   
+  // ─────────────────────────────────────────────────────────────────────
+  // Drawing (arrows / freehand)
+  // ─────────────────────────────────────────────────────────────────────
+  //
+  // Drawings are stored in page coordinates, so they stay on the content they
+  // point at while the page scrolls. They are rendered into one SVG overlay that
+  // stays visible during screenshot capture, so they show up in the images.
+
+  function setTool(tool) {
+    activeTool = TOOL_HINTS[tool] ? tool : "select";
+    drawDraft = null;
+    cancelRegionDraft();
+    hideHighlight();
+    hideTooltip();
+    panelEl?.querySelectorAll("[data-tool]").forEach(btn => {
+      btn.classList.toggle("active", btn.dataset.tool === activeTool);
+    });
+    updateToolHint();
+    renderDrawings();
+  }
+
+  function updateToolHint() {
+    const hint = document.getElementById("agent-hint");
+    if (!hint) return;
+    hint.textContent = pageFrozen
+      ? TOOL_HINTS[activeTool](selectDragAction)
+      : `Page is live • Open the menu or hover what you need, then press ${FREEZE_HOTKEY} to freeze and annotate`;
+  }
+
+  async function loadDrawSettings() {
+    let color = DEFAULT_DRAW_COLOR;
+    try {
+      const stored = await chrome.storage.local.get({
+        annotationSelectDrag: DEFAULT_SELECT_DRAG,
+        annotationDrawColor: DEFAULT_DRAW_COLOR,
+      });
+      selectDragAction = stored.annotationSelectDrag === "region" ? "region" : "arrow";
+      if (/^#[0-9a-f]{6}$/i.test(stored.annotationDrawColor)) color = stored.annotationDrawColor;
+    } catch (err) {
+      console.warn("[agent-annotation] Failed to load drawing settings:", err);
+      selectDragAction = DEFAULT_SELECT_DRAG;
+    }
+    drawingsEl?.style.setProperty("--agent-draw-color", color);
+    updateToolHint();
+  }
+
+  // What a mouse drag on the page does with the current tool: "region" | "arrow" | "pen".
+  function getDragAction() {
+    return activeTool === "select" ? selectDragAction : activeTool;
+  }
+
+  // Called once a press has moved past the drag threshold.
+  function startDrawing(type, start, current) {
+    drawDraft = { type, points: [start, current] };
+    hideHighlight();
+    hideTooltip();
+    renderDrawings();
+  }
+
+  function snapToAngle(from, to, step = Math.PI / 4) {
+    const length = Math.hypot(to.x - from.x, to.y - from.y);
+    const angle = Math.round(Math.atan2(to.y - from.y, to.x - from.x) / step) * step;
+    return { x: from.x + Math.cos(angle) * length, y: from.y + Math.sin(angle) * length };
+  }
+
+  function updateDrawing(e) {
+    // Button released outside the window - we never got the mouseup.
+    if (!(e.buttons & 1)) {
+      finishDrawing(e);
+      return;
+    }
+
+    const p = { x: e.clientX, y: e.clientY };
+    const points = drawDraft.points;
+    if (drawDraft.type === "arrow") {
+      points[1] = e.shiftKey ? snapToAngle(points[0], p) : p;
+    } else {
+      const last = points[points.length - 1];
+      if (Math.hypot(p.x - last.x, p.y - last.y) < DRAW_PEN_MIN_STEP) return;
+      points.push(p);
+    }
+    renderDrawings();
+  }
+
+  function finishDrawing(e) {
+    const draft = drawDraft;
+    drawDraft = null;
+    // The click that follows this mouseup must not select an element.
+    suppressClickUntil = e.timeStamp + 500;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (getPathLength(draft.points) < DRAW_MIN_LENGTH) {
+      renderDrawings();
+      return;
+    }
+    addDrawing(draft, e.shiftKey);
+  }
+
+  // A finished arrow / stroke becomes a selection with its own note card,
+  // just like an element or an area.
+  function addDrawing(draft, additive) {
+    const info = draft.type === "arrow" ? analyzeArrow(draft.points) : analyzePen(draft.points);
+    if (!(multiSelectMode || additive)) clearSelections();
+
+    const anchor = info.anchor;
+    const base = anchor.getBoundingClientRect();
+    const selection = {
+      kind: draft.type,
+      element: anchor,
+      selector: generateSelector(anchor),
+      tag: anchor.tagName.toLowerCase(),
+      id: anchor.id || null,
+      classes: Array.from(anchor.classList),
+      drawPoints: draft.points.map(p => ({ x: p.x - base.left, y: p.y - base.top })),
+      reactTarget: info.reactTarget,
+      drawTargetRefs: info.targetRefs,
+      ...info.data,
+    };
+
+    selectedElements.push(selection);
+    enrichSelectionReactComponent(selection);
+    enrichDrawingTargetsReactComponents(selection);
+
+    createNoteCard(selectedElements.length - 1);
+    updateBadges();
+    updateConnectors();
+  }
+
+  function getPathLength(points) {
+    let length = 0;
+    for (let i = 1; i < points.length; i++) {
+      length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    }
+    return length;
+  }
+
+  function getPointsBounds(points) {
+    const xs = points.map(p => p.x);
+    const ys = points.map(p => p.y);
+    const left = Math.min(...xs);
+    const top = Math.min(...ys);
+    const right = Math.max(...xs);
+    const bottom = Math.max(...ys);
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }
+
+  // Topmost page element at a viewport point (ignoring our UI).
+  function elementAtClientPoint({ x, y }) {
+    if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return null;
+    let el = withAgentUIHidden(() => document.elementFromPoint(x, y));
+    if (el instanceof SVGElement && el.ownerSVGElement) {
+      while (el.ownerSVGElement) el = el.ownerSVGElement;
+    }
+    if (!el || el === document.body || el === document.documentElement || isInAgentUI(el)) return null;
+    return el;
+  }
+
+  // Element at the point, or the closest one around it (an arrow tip often stops just short).
+  function findElementNear(point) {
+    const exact = elementAtClientPoint(point);
+    if (exact) return exact;
+    for (const radius of DRAW_NEAR_RADII) {
+      for (let i = 0; i < 8; i++) {
+        const angle = i * Math.PI / 4;
+        const el = elementAtClientPoint({ x: point.x + Math.cos(angle) * radius, y: point.y + Math.sin(angle) * radius });
+        if (el) return el;
+      }
+    }
+    return null;
+  }
+
+  function isScrollContainer(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    const style = getComputedStyle(el);
+    const scrollsY = /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight;
+    const scrollsX = /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth;
+    return scrollsY || scrollsX;
+  }
+
+  function getScrollParent(el) {
+    for (let p = el?.parentElement; p && p !== document.body; p = p.parentElement) {
+      if (isScrollContainer(p)) return p;
+    }
+    return null;
+  }
+
+  // The drawing is stored relative to this element, so it must move with the scrolled
+  // content - a scroll container's own box stays put while its content scrolls.
+  function pickDrawingAnchor(primary, secondary) {
+    if (!primary) return secondary || document.body;
+    if (!secondary) return primary;
+
+    const scrollParent = getScrollParent(primary);
+    if (getScrollParent(secondary) !== scrollParent) return primary;
+
+    const common = lowestCommonAncestor([primary, secondary]);
+    if (isScrollContainer(common) || (scrollParent && !scrollParent.contains(common))) return primary;
+    return common;
+  }
+
+  // What the arrow starts at and points to. The tip matters most: it anchors the
+  // arrow and gives the React component.
+  function analyzeArrow([from, to]) {
+    const fromEl = findElementNear(from);
+    const toEl = findElementNear(to);
+    return {
+      anchor: pickDrawingAnchor(toEl, fromEl),
+      reactTarget: toEl || fromEl,
+      targetRefs: [fromEl, toEl],
+      data: {
+        fromElement: fromEl ? describeElementBrief(fromEl) : null,
+        toElement: toEl ? describeElementBrief(toEl) : null,
+      },
+    };
+  }
+
+  // What the freehand stroke circles / underlines / crosses out: the area of its bounding box.
+  function analyzePen(points) {
+    const bounds = getPointsBounds(points);
+    const pad = 4; // so a flat underline still covers the text above it
+    const left = Math.max(0, bounds.left - pad);
+    const top = Math.max(0, bounds.top - pad);
+    const right = Math.min(window.innerWidth, bounds.right + pad);
+    const bottom = Math.min(window.innerHeight, bounds.bottom + pad);
+    const startEl = findElementNear(points[0]);
+
+    if (right - left < REGION_MIN_SIZE || bottom - top < REGION_MIN_SIZE) {
+      return { anchor: startEl || document.body, reactTarget: startEl, targetRefs: [], data: { covered: null } };
+    }
+
+    const analysis = analyzeRegion({ left, top, right, bottom, x: left, y: top, width: right - left, height: bottom - top });
+    const container = analysis.container;
+    const refs = analysis.elementRefs.slice(0, DRAW_MAX_COVERED_ELEMENTS);
+    const anchor = isScrollContainer(container) ? (refs[0] || startEl || container) : container;
+
+    return {
+      anchor,
+      reactTarget: refs[0] || (container !== document.body ? container : startEl),
+      targetRefs: refs,
+      data: {
+        covered: {
+          container: container !== document.body ? describeElementBrief(container) : null,
+          text: analysis.text,
+          elements: analysis.elements.slice(0, DRAW_MAX_COVERED_ELEMENTS),
+        },
+      },
+    };
+  }
+
+  // React components of the elements an arrow connects / a stroke covers.
+  async function enrichDrawingTargetsReactComponents(selection) {
+    const refs = selection.drawTargetRefs || [];
+    if (!refs.some(Boolean)) return;
+
+    const entries = selection.kind === "arrow"
+      ? [selection.fromElement, selection.toElement]
+      : (selection.covered?.elements || []);
+
+    const results = await requestReactComponentInfo(refs);
+    results.forEach(({ index, reactComponent }) => {
+      const entry = entries[index];
+      if (!entry || !reactComponent?.name) return;
+      entry.reactComponent = {
+        name: reactComponent.name,
+        source: reactComponent.source || null,
+        jsxSource: reactComponent.jsxSource || null,
+      };
+    });
+  }
+
+  function fmtCoord(n) {
+    return Math.round(n * 10) / 10;
+  }
+
+  function arrowMarkup(from, to) {
+    const angle = Math.atan2(to.y - from.y, to.x - from.x);
+    const length = Math.hypot(to.x - from.x, to.y - from.y);
+    const head = Math.min(DRAW_ARROW_HEAD, length * 0.6);
+    const spread = Math.PI / 7;
+    const headPoints = [
+      to,
+      { x: to.x - head * Math.cos(angle - spread), y: to.y - head * Math.sin(angle - spread) },
+      { x: to.x - head * Math.cos(angle + spread), y: to.y - head * Math.sin(angle + spread) },
+    ].map(p => `${fmtCoord(p.x)},${fmtCoord(p.y)}`).join(" ");
+    // End the shaft inside the head so its round cap doesn't poke out of the tip.
+    const shaftEnd = { x: to.x - head * 0.7 * Math.cos(angle), y: to.y - head * 0.7 * Math.sin(angle) };
+    const shaft = `M${fmtCoord(from.x)},${fmtCoord(from.y)} L${fmtCoord(shaftEnd.x)},${fmtCoord(shaftEnd.y)}`;
+
+    return `<path class="agent-draw-halo" d="${shaft}"/>` +
+      `<polygon class="agent-draw-head agent-draw-halo" points="${headPoints}"/>` +
+      `<path class="agent-draw-stroke" d="${shaft}"/>` +
+      `<polygon class="agent-draw-head" points="${headPoints}"/>`;
+  }
+
+  // Smooth freehand path: quadratic curves through the midpoints of recorded points.
+  function penMarkup(points) {
+    const p = (pt) => `${fmtCoord(pt.x)},${fmtCoord(pt.y)}`;
+    let d = `M${p(points[0])}`;
+    if (points.length === 1) {
+      d += ` L${p(points[0])}`;
+    } else {
+      for (let i = 1; i < points.length - 1; i++) {
+        const mid = { x: (points[i].x + points[i + 1].x) / 2, y: (points[i].y + points[i + 1].y) / 2 };
+        d += ` Q${p(points[i])} ${p(mid)}`;
+      }
+      d += ` L${p(points[points.length - 1])}`;
+    }
+    return `<path class="agent-draw-halo" d="${d}"/><path class="agent-draw-stroke" d="${d}"/>`;
+  }
+
+  function drawingMarkup(type, points) {
+    return type === "arrow" ? arrowMarkup(points[0], points[1]) : penMarkup(points);
+  }
+
+  // Drawings live in one SVG overlay. It stays visible during screenshot capture,
+  // so they show up in the images.
+  function renderDrawings() {
+    if (!drawingsEl) return;
+    const parts = [];
+    selectedElements.forEach(sel => {
+      if (!isDrawingSelection(sel) || !sel.element || !document.contains(sel.element)) return;
+      parts.push(drawingMarkup(sel.kind, getDrawingPoints(sel)));
+    });
+    if (drawDraft) parts.push(drawingMarkup(drawDraft.type, drawDraft.points));
+    drawingsEl.innerHTML = parts.join("");
+  }
+
+  // Screenshot crop for a drawing: the drawing plus padding, grown to at least
+  // DRAW_SCREENSHOT_MIN_SHARE of the viewport in each direction, centred on the
+  // drawing and shifted to stay inside the viewport.
+  function getDrawingCropRect(sel) {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rect = getSelectionRect(sel);
+
+    const fit = (start, end, min, max) => {
+      let size = Math.min(max, Math.max(end - start + 2 * DRAW_SCREENSHOT_PADDING, min));
+      let from = (start + end) / 2 - size / 2;
+      from = Math.max(0, Math.min(from, max - size));
+      return [from, from + size];
+    };
+
+    const [left, right] = fit(rect.left, rect.right, vw * DRAW_SCREENSHOT_MIN_SHARE, vw);
+    const [top, bottom] = fit(rect.top, rect.bottom, vh * DRAW_SCREENSHOT_MIN_SHARE, vh);
+    return { left, top, right, bottom, x: left, y: top, width: right - left, height: bottom - top };
+  }
+
+  function downsamplePoints(points, max) {
+    if (points.length <= max) return points;
+    const result = [];
+    for (let i = 0; i < max; i++) {
+      result.push(points[Math.round(i * (points.length - 1) / (max - 1))]);
+    }
+    return result;
+  }
+
+  function buildDrawingPayload(sel, comment) {
+    const points = getDrawingPoints(sel).map(p => ({
+      x: Math.round(p.x + window.scrollX),
+      y: Math.round(p.y + window.scrollY),
+    }));
+    const common = {
+      type: sel.kind,
+      comment,
+      reactComponent: sel.reactComponent || null,
+      anchor: {
+        selector: sel.selector,
+        tag: sel.tag,
+        id: sel.id,
+        classes: sel.classes,
+        rect: getRectData(sel.element),
+      },
+    };
+
+    if (sel.kind === "arrow") {
+      return {
+        ...common,
+        from: points[0],
+        to: points[1],
+        fromElement: sel.fromElement,
+        toElement: sel.toElement,
+      };
+    }
+
+    const bounds = getPointsBounds(points);
+    return {
+      ...common,
+      bounds: { x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height },
+      points: downsamplePoints(points, DRAW_PEN_MAX_POINTS).map(p => [p.x, p.y]),
+      covered: sel.covered,
+    };
+  }
+
   function generateSelector(el) {
     if (el.id && /^[a-zA-Z][\w-]*$/.test(el.id)) return `#${el.id}`;
     
@@ -2457,10 +3342,17 @@
     }
   }
 
-  async function enrichSelectionReactComponent(selection) {
-    if (!selection?.element || selection.reactComponent || !document.contains(selection.element)) return;
+  // Drawings look up the component of what they point at, not of their anchor element.
+  function getReactLookupElement(selection) {
+    const target = selection?.reactTarget;
+    return target && document.contains(target) ? target : selection?.element;
+  }
 
-    const results = await requestReactComponentInfo([selection.element]);
+  async function enrichSelectionReactComponent(selection) {
+    const lookupEl = getReactLookupElement(selection);
+    if (!lookupEl || selection.reactComponent || !document.contains(lookupEl)) return;
+
+    const results = await requestReactComponentInfo([lookupEl]);
     const reactComponent = results[0]?.reactComponent;
     if (!reactComponent || !selectedElements.includes(selection)) return;
 
@@ -2480,7 +3372,7 @@
     if (!pending.length) return;
 
     const results = await requestReactComponentInfo(
-      pending.map(item => item.selection.element)
+      pending.map(item => getReactLookupElement(item.selection))
     );
 
     results.forEach(({ index, reactComponent }) => {
@@ -3017,7 +3909,8 @@
       if (isAgentElement(m.target) || isAgentElement(m.target.parentElement)) continue;
 
       if (m.type === "attributes") {
-        if (m.attributeName === "data-agent-changed" || m.attributeName === REACT_COMPONENT_MARKER_ATTR) continue;
+        // Our own markers (data-agent-changed, freeze pins, React lookup marker) are not page edits.
+        if (m.attributeName.startsWith("data-agent-") || m.attributeName === REACT_COMPONENT_MARKER_ATTR) continue;
 
         if (m.attributeName === "style") {
           if (!etchStyleInitials.has(m.target)) {
@@ -3125,7 +4018,7 @@
     for (let si = 0; si < document.styleSheets.length; si++) {
       const sheet = document.styleSheets[si];
       // Skip agent-annotation's own injected styles
-      if (sheet.ownerNode?.id === "agent-styles") continue;
+      if (sheet.ownerNode?.id?.startsWith?.("agent-")) continue;
 
       try {
         const rules = sheet.cssRules;
@@ -3641,6 +4534,7 @@
           if (!element || !document.contains(element)) return;
 
           const rect = getSelectionRect(sel);
+          const badgePoint = getSelectionBadgePoint(sel);
 
           // Areas have no element outline in the page, so draw their frame into the image.
           if (isRegionSelection(sel)) {
@@ -3655,8 +4549,8 @@
           // Badge center should be at element's top-right corner (matching DOM badge positioning)
           // DOM: badge.style.left = rect.right - 14, badge.style.top = rect.top - 14
           // This puts the 28px badge's CENTER at (rect.right, rect.top)
-          const centerX = rect.right * dpr;
-          const centerY = rect.top * dpr;
+          const centerX = badgePoint.x * dpr;
+          const centerY = badgePoint.y * dpr;
           
           // Clamp to keep badge fully visible within canvas
           const badgeX = Math.max(badgeSize / 2, Math.min(centerX, canvas.width - badgeSize / 2));
@@ -3733,7 +4627,7 @@
     pruneStaleSelections();
     if (debugMode) {
       selectedElements.forEach(sel => {
-        if (!isRegionSelection(sel) && sel.element && document.contains(sel.element)) {
+        if (isElementSelection(sel) && sel.element && document.contains(sel.element)) {
           sel.computedStyles = getComputedStyles(sel.element);
           sel.parentContext = getParentContext(sel.element);
           sel.cssVariables = getCSSVariables(sel.element);
@@ -3746,6 +4640,7 @@
     const elements = selectedElements.map((sel, i) => {
       const comment = elementComments.get(i) || "";
       if (isRegionSelection(sel)) return buildRegionPayload(sel, comment);
+      if (isDrawingSelection(sel)) return buildDrawingPayload(sel, comment);
 
       const { element, ...rest } = sel;
       return {
@@ -3775,6 +4670,7 @@
         if (resp?.dataUrl) {
           const fullScreenshot = resp.dataUrl;
           
+          // Drawings (arrows / strokes) stay visible during capture, so they are in the images.
           if (screenshotMode === "full") {
             // Add numbered badges to the full screenshot so elements can be identified
             screenshot = await addBadgesToScreenshot(fullScreenshot, selectedElements);
@@ -3785,8 +4681,10 @@
               const element = sel.element;
               if (hasScreenshot && element && document.contains(element)) {
                 // Areas are cropped exactly as drawn; elements get a bit of surrounding context.
-                const padding = isRegionSelection(sel) ? 0 : SCREENSHOT_PADDING;
-                const cropped = await cropToRect(fullScreenshot, getSelectionRect(sel), padding);
+                // Drawings get a large crop, so what the arrow points at has its context too.
+                const cropped = isDrawingSelection(sel)
+                  ? await cropToRect(fullScreenshot, getDrawingCropRect(sel), 0)
+                  : await cropToRect(fullScreenshot, getSelectionRect(sel), isRegionSelection(sel) ? 0 : SCREENSHOT_PADDING);
                 screenshots.push({ index: i + 1, dataUrl: cropped });
               }
             }
@@ -3796,6 +4694,8 @@
         console.error("[agent-annotation] Screenshot failed:", err);
       }
     }
+    // Edit-capture before/after shots should show only the page.
+    if (drawingsEl) drawingsEl.style.display = "none";
 
     // Edit capture
     let editCapture = null;
@@ -3868,6 +4768,7 @@
       if (markersContainer) markersContainer.style.display = "";
       if (notesContainer) notesContainer.style.display = "";
       if (connectorsEl) connectorsEl.style.display = "";
+      if (drawingsEl) drawingsEl.style.display = "";
       if (panelEl) panelEl.style.display = "";
       alert(`Failed to submit annotations: ${delivery?.error || "Unknown error"}`);
       return;

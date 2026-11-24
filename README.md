@@ -149,6 +149,40 @@ Each item in `elements` has a `type`. Clicked elements are `"type": "element"` (
 - `text`: visible text inside the area; text nodes cut by the edge are narrowed to whole words.
 - In Crop mode the area screenshot is cropped exactly to `rect`; in Full mode the area frame is drawn into the screenshot.
 
+Arrows and freehand strokes drawn with the **Arrow** / **Pen** tools are annotations too: releasing the mouse opens a note card, and they are sent in `elements` as `"type": "arrow"` / `"type": "pen"` (coordinates are page coordinates, like `rect`):
+
+```json
+{
+  "type": "arrow",
+  "comment": "move this button here",
+  "from": { "x": 120, "y": 340 },
+  "to": { "x": 410, "y": 215 },
+  "fromElement": { "selector": "#c1 > button", "tag": "button", "text": "Start", "rect": {}, "role": "button", "name": "Start", "reactComponent": {} },
+  "toElement": { "selector": "#c3", "tag": "div", "text": "Pro team…", "rect": {}, "reactComponent": {} },
+  "reactComponent": { "name": "PricingCard", "source": {}, "jsxSource": {} },
+  "anchor": { "selector": "#c3", "tag": "div", "id": "c3", "classes": [], "rect": {} }
+}
+```
+
+```json
+{
+  "type": "pen",
+  "comment": "this heading is too big",
+  "bounds": { "x": 30, "y": 120, "width": 210, "height": 60 },
+  "points": [[30, 150], [34, 141], [45, 131]],
+  "covered": { "container": { "selector": "h2.title", "tag": "h2" }, "text": "Pricing", "elements": [] },
+  "reactComponent": { "name": "SectionTitle" },
+  "anchor": { "selector": "h2.title", "tag": "h2" }
+}
+```
+
+- `fromElement` / `toElement`: the page element under the arrow's tail and tip; when nothing is right under an end, the closest element within 20 px (`null` if none).
+- `reactComponent`: the component of what the arrow points at (`toElement`, else `fromElement`); for a stroke, of the first element it covers. `fromElement` / `toElement` / `covered.elements[]` carry their own `reactComponent` when available.
+- `covered`: what lies under the stroke's bounding box (same analysis as an area selection; up to 10 `elements`).
+- `anchor`: the element the drawing is attached to. It moves with the page and with inner scroll containers, like an area.
+- `points`: the stroke path, downsampled to at most 200 points.
+- Drawings are visible in the screenshots. In Crop mode a drawing's crop is at least half the viewport wide and tall (centred on the drawing, 40 px padding, kept inside the viewport), so the surroundings are in the picture.
+
 If **JSON-RPC** is selected, the same annotation payload is sent in `params` using JSON-RPC 2.0. The method name is configurable and defaults to `annotations`.
 
 ```json
@@ -173,7 +207,13 @@ If the endpoint returns a non-2xx response or the request fails, the annotation 
 | Action | How |
 |--------|-----|
 | Select element | Click on page |
-| Select area | Drag on page (screenshot + detected elements and text) |
+| Select area | "▭ Area" tool, drag on page (screenshot + detected elements and text) |
+| Drag in Select tool | Draws an arrow by default; set **Dragging in Select mode** to "Selects an area" in the extension options |
+| Draw arrow | Drag in Select tool (default) or "↗ Arrow" tool (Shift snaps to 45°) → note card |
+| Draw freehand | "✎ Pen" tool, drag on page → note card |
+| Arrow / pen color | **Arrow & Pen Color** in the extension options (default red) |
+| Remove drawing | × in its note card |
+| Back to selecting | "Select" tool or `ESC` |
 | Cycle ancestors | Alt/Option+scroll while hovering |
 | Multi-select | Toggle "Multi" or Shift+click |
 | Add comment | Type in note card textarea |
@@ -182,6 +222,8 @@ If the endpoint returns a non-2xx response or the request fails, the annotation 
 | Scroll to element | Click selector in note card |
 | Toggle note | Click numbered badge |
 | Toggle edit capture | "Etch" toggle in toolbar |
+| Use the page while annotating (open a menu) | `F8` or "❄ Frozen" button → Live |
+| Freeze the page again | `F8` (immediately) or "▶ Live" button (freezes in 3 s) |
 | Toggle annotation UI | `Cmd/Ctrl+Shift+P` |
 | Close | `ESC` |
 
@@ -213,6 +255,8 @@ Notes:
 **Inline Note Cards**: Draggable floating cards with per-element comments, SVG connectors linking notes to elements, click-to-scroll, and per-element screenshot toggles.
 
 **Screenshots**: Individual crops per element or full-page mode with numbered badges drawn on the screenshot.
+
+**Page Freeze**: While annotating, the page is frozen: it gets no clicks, focus changes, hover or key events, so open dropdowns, menus and popovers don't see an "outside click", focus loss, mouseleave or `ESC` and stay open while you click, draw and type notes. `:hover` / `:focus` / `:focus-within` / `:focus-visible` styles are pinned as they were (CSS-only hover menus stay visible) and running animations are paused. To annotate an open menu, open it first and then press `Cmd/Ctrl+Shift+P`. Or, while annotating, press `F8` (Live), open the menu, and press `F8` again. The toolbar button does the same, but freezes after a 3 s countdown, because clicking it would itself close the menu. Limits: menus that close on window blur (native `<select>`, some libraries when you click the toolbar icon) close before the freeze. Libraries that listen for outside clicks in the capture phase on `document` (e.g. Headless UI) can still see clicks on the annotation UI. Rules in cross-origin stylesheets and shadow DOM aren't pinned.
 
 **Edit Capture**: Toggle "Etch" in the toolbar to record DevTools edits. Inline styles, CSS rule changes, classes, text edits, and DOM changes are captured in the submitted JSON.
 
